@@ -15,15 +15,8 @@ from collections import OrderedDict
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
-try:
-    import ttkbootstrap as ttk
-    from ttkbootstrap.constants import *
-    from ttkbootstrap.dialogs import Messagebox
-except ImportError:
-    print("请先安装 ttkbootstrap: pip install ttkbootstrap")
-    sys.exit(1)
-
-from tkinter import filedialog, StringVar
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, StringVar
 
 
 def extract_size(spec_name):
@@ -229,7 +222,19 @@ def process_orders(input_path, output_dir):
     out_ws.column_dimensions['J'].width = 12
 
     today = datetime.now().strftime("%Y%m%d")
-    output_path = os.path.join(output_dir, f"帆布订单明细_{today}.xlsx")
+    base_name = f"帆布订单明细_{today}"
+    output_path = os.path.join(output_dir, f"{base_name}.xlsx")
+
+    # 如果文件被占用（Excel打开中），自动加编号避免冲突
+    counter = 2
+    while os.path.exists(output_path):
+        try:
+            with open(output_path, 'a'):
+                break  # 文件没被占用，可以覆盖
+        except PermissionError:
+            output_path = os.path.join(output_dir, f"{base_name}_{counter}.xlsx")
+            counter += 1
+
     out_wb.save(output_path)
     return output_path, len(orders), total_qty, len(sorted_sizes), round(total_area, 2)
 
@@ -246,94 +251,123 @@ def open_folder(path):
 
 
 class OrderApp:
-    def __init__(self):
-        self.root = ttk.Window(
-            title="帆布订单整理工具",
-            themename="cosmo",
-            size=(620, 560),
-            resizable=(False, False),
-        )
-        self._center_window()
-        self.input_path = StringVar()
-        self.output_dir = StringVar()
-        self.output_path = None
-        self._build_ui()
-        self.root.mainloop()
+    # 配色方案
+    BG = "#f0f4f8"
+    CARD_BG = "#ffffff"
+    PRIMARY = "#4a90d9"
+    SUCCESS = "#28a745"
+    DANGER = "#dc3545"
+    TEXT = "#333333"
+    TEXT_LIGHT = "#888888"
+    BORDER = "#d0d7de"
 
-    def _center_window(self):
-        self.root.update_idletasks()
-        w, h = 620, 560
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("帆布订单整理工具")
+        self.root.configure(bg=self.BG)
+        self.root.resizable(False, False)
+
+        w, h = 600, 530
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
+        self.input_path = StringVar()
+        self.output_dir = StringVar()
+        self.output_path = None
+
+        self._setup_styles()
+        self._build_ui()
+        self.root.mainloop()
+
+    def _setup_styles(self):
+        style = ttk.Style()
+        style.theme_use("clam")
+
+        style.configure("Title.TLabel", background=self.BG, foreground=self.PRIMARY,
+                        font=("Microsoft YaHei", 18, "bold"))
+        style.configure("Card.TFrame", background=self.CARD_BG)
+        style.configure("CardTitle.TLabel", background=self.CARD_BG, foreground=self.TEXT,
+                        font=("Microsoft YaHei", 10, "bold"))
+        style.configure("Path.TEntry", font=("Microsoft YaHei", 9))
+
+        style.configure("Primary.TButton", font=("Microsoft YaHei", 9),
+                        background=self.PRIMARY, foreground="white")
+        style.map("Primary.TButton",
+                  background=[("active", "#3a7bc8"), ("disabled", "#a0b4c8")])
+
+        style.configure("Success.TButton", font=("Microsoft YaHei", 11, "bold"),
+                        background=self.SUCCESS, foreground="white", padding=(20, 10))
+        style.map("Success.TButton",
+                  background=[("active", "#218838"), ("disabled", "#a0c8a0")])
+
+        style.configure("Info.TButton", font=("Microsoft YaHei", 9),
+                        background="#17a2b8", foreground="white")
+        style.map("Info.TButton",
+                  background=[("active", "#138496"), ("disabled", "#a0c8d0")])
+
+        style.configure("Result.TLabel", background=self.CARD_BG, foreground=self.TEXT_LIGHT,
+                        font=("Microsoft YaHei", 11), wraplength=520, justify="left")
+
+        style.configure("green.Horizontal.TProgressbar", troughcolor="#e0e0e0",
+                        background=self.SUCCESS, thickness=8)
+
+    def _make_card(self, parent, title_text, pady=(0, 8)):
+        outer = tk.Frame(parent, bg=self.BG)
+        outer.pack(fill="x", padx=24, pady=pady)
+
+        title = ttk.Label(outer, text=title_text, style="CardTitle.TLabel")
+        title.configure(background=self.BG)
+        title.pack(anchor="w", pady=(0, 4))
+
+        card = tk.Frame(outer, bg=self.CARD_BG, highlightbackground=self.BORDER,
+                        highlightthickness=1, padx=12, pady=10)
+        card.pack(fill="x")
+        return card
+
     def _build_ui(self):
         # 标题
-        title = ttk.Label(
-            self.root, text="帆布订单整理工具",
-            font=("Microsoft YaHei", 18, "bold"),
-            bootstyle="primary",
-        )
-        title.pack(pady=(20, 10))
+        ttk.Label(self.root, text="帆布订单整理工具", style="Title.TLabel").pack(pady=(20, 12))
 
-        # 选择文件区域
-        file_frame = ttk.LabelFrame(self.root, text="  选择原始数据文件  ", padding=12)
-        file_frame.pack(fill="x", padx=24, pady=(5, 8))
-
-        file_row = ttk.Frame(file_frame)
+        # 选择文件卡片
+        file_card = self._make_card(self.root, "原始数据文件", pady=(0, 10))
+        file_row = tk.Frame(file_card, bg=self.CARD_BG)
         file_row.pack(fill="x")
-        self.file_entry = ttk.Entry(file_row, textvariable=self.input_path, state="readonly")
+        self.file_entry = ttk.Entry(file_row, textvariable=self.input_path,
+                                    state="readonly", style="Path.TEntry")
         self.file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(
-            file_row, text="选择文件", bootstyle="outline-primary",
-            command=self._select_file, width=10,
-        ).pack(side="right")
+        ttk.Button(file_row, text="选择文件", style="Primary.TButton",
+                   command=self._select_file, width=10).pack(side="right")
 
-        # 保存位置区域
-        save_frame = ttk.LabelFrame(self.root, text="  选择保存位置  ", padding=12)
-        save_frame.pack(fill="x", padx=24, pady=(0, 8))
-
-        save_row = ttk.Frame(save_frame)
+        # 保存位置卡片
+        save_card = self._make_card(self.root, "保存位置", pady=(0, 10))
+        save_row = tk.Frame(save_card, bg=self.CARD_BG)
         save_row.pack(fill="x")
-        self.save_entry = ttk.Entry(save_row, textvariable=self.output_dir, state="readonly")
+        self.save_entry = ttk.Entry(save_row, textvariable=self.output_dir,
+                                    state="readonly", style="Path.TEntry")
         self.save_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(
-            save_row, text="选择文件夹", bootstyle="outline-primary",
-            command=self._select_output_dir, width=10,
-        ).pack(side="right")
+        ttk.Button(save_row, text="选择文件夹", style="Primary.TButton",
+                   command=self._select_output_dir, width=10).pack(side="right")
 
         # 开始处理按钮
-        self.process_btn = ttk.Button(
-            self.root, text="开始处理", bootstyle="success",
-            command=self._start_process, width=20,
-            padding=(10, 8),
-        )
-        self.process_btn.pack(pady=(10, 5))
+        self.process_btn = ttk.Button(self.root, text="开始处理", style="Success.TButton",
+                                      command=self._start_process, width=18)
+        self.process_btn.pack(pady=(8, 5))
 
         # 进度条
-        self.progress = ttk.Progressbar(
-            self.root, mode="indeterminate", bootstyle="success-striped",
-        )
-        self.progress.pack(fill="x", padx=24, pady=(0, 8))
+        self.progress = ttk.Progressbar(self.root, mode="indeterminate",
+                                        style="green.Horizontal.TProgressbar", length=540)
+        self.progress.pack(pady=(0, 8))
 
-        # 结果区域
-        result_frame = ttk.LabelFrame(self.root, text="  处理结果  ", padding=12)
-        result_frame.pack(fill="x", padx=24, pady=(0, 8))
-
-        self.result_label = ttk.Label(
-            result_frame, text="等待处理...",
-            font=("Microsoft YaHei", 11),
-            foreground="gray",
-            wraplength=540, justify="left",
-        )
+        # 结果卡片
+        result_card = self._make_card(self.root, "处理结果", pady=(0, 10))
+        self.result_label = ttk.Label(result_card, text="等待处理...", style="Result.TLabel")
         self.result_label.pack(fill="x")
 
         # 打开文件夹按钮
-        self.open_btn = ttk.Button(
-            self.root, text="打开文件夹", bootstyle="info-outline",
-            command=self._open_output_folder, width=16, state="disabled",
-        )
-        self.open_btn.pack(pady=(5, 15))
+        self.open_btn = ttk.Button(self.root, text="打开文件夹", style="Info.TButton",
+                                   command=self._open_output_folder, width=14, state="disabled")
+        self.open_btn.pack(pady=(0, 15))
 
     def _select_file(self):
         path = filedialog.askopenfilename(
@@ -353,10 +387,10 @@ class OrderApp:
 
     def _start_process(self):
         if not self.input_path.get():
-            Messagebox.show_warning("请先选择原始数据文件", title="提示")
+            messagebox.showwarning("提示", "请先选择原始数据文件")
             return
         if not self.output_dir.get():
-            Messagebox.show_warning("请先选择保存位置", title="提示")
+            messagebox.showwarning("提示", "请先选择保存位置")
             return
 
         self.process_btn.config(state="disabled")
@@ -382,18 +416,23 @@ class OrderApp:
             text=(
                 f"处理完成！\n"
                 f"共 {order_count} 条订单    |    共 {size_count} 种尺寸\n"
-                f"总数量：{total_qty}    |    总平方数：{total_area} m²\n"
+                f"总数量：{total_qty}    |    总平方数：{total_area} m\u00b2\n"
                 f"已保存到：{output_path}"
             ),
-            foreground="#28a745",
         )
+        self.result_label.configure(foreground=self.SUCCESS)
         self.process_btn.config(state="normal")
         self.open_btn.config(state="normal")
 
     def _on_error(self, msg):
         self.progress.stop()
-        self.result_label.config(text=f"处理失败：\n{msg}", foreground="#dc3545")
+        self.result_label.config(text=f"处理失败：\n{msg}")
+        self.result_label.configure(foreground=self.DANGER)
         self.process_btn.config(state="normal")
+
+    def _open_output_folder(self):
+        if self.output_path:
+            open_folder(os.path.dirname(self.output_path))
 
 
 def main():
