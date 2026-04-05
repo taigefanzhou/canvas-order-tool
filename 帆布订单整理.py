@@ -42,25 +42,56 @@ def process_orders(input_path):
     wb = openpyxl.load_workbook(input_path)
     ws = wb.active
 
-    # 读取数据（跳过表头，第1行是序号空，第2行开始是数据）
+    # 读取表头，自动匹配列位置（兼容不同格式的Excel）
+    header_row = [str(cell.value).strip() if cell.value else '' for cell in ws[1]]
+
+    # 定义列名映射（支持多种可能的表头名称）
+    col_map = {}
+    for idx, name in enumerate(header_row):
+        if name in ('订单号', '订单编号'):
+            col_map['order_no'] = idx
+        elif name in ('规格名称', '商品规格', '规格'):
+            col_map['spec_name'] = idx
+        elif name in ('规格编码', '编码'):
+            col_map['spec_code'] = idx
+        elif name in ('数量', '购买数量', '订购数量'):
+            col_map['qty'] = idx
+        elif name in ('备注', '买家备注', '卖家备注'):
+            col_map['remark'] = idx
+
+    # 检查必要列是否存在
+    missing = [k for k in ('order_no', 'spec_name', 'qty') if k not in col_map]
+    if missing:
+        col_names = {'order_no': '订单号', 'spec_name': '规格名称', 'qty': '数量'}
+        raise ValueError(
+            f"Excel表头中未找到必要的列：{', '.join(col_names[k] for k in missing)}\n"
+            f"当前表头：{header_row}\n"
+            f"请确认Excel文件格式是否正确"
+        )
+
     orders = []
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
-        # 列: 序号, 订单号, 规格名称, 规格编码, 数量, 备注
-        order_no = row[1]
-        spec_name = row[2]
-        spec_code = row[3]
-        qty = row[4]
-        remark = row[5]
+        order_no = row[col_map['order_no']]
+        spec_name = row[col_map['spec_name']]
+        spec_code = row[col_map.get('spec_code', -1)] if col_map.get('spec_code') is not None and col_map.get('spec_code') < len(row) else ''
+        qty = row[col_map['qty']]
+        remark = row[col_map.get('remark', -1)] if col_map.get('remark') is not None and col_map.get('remark') < len(row) else ''
 
         if not order_no or not spec_name:
             continue
 
         size = extract_size(str(spec_name))
+        # 安全转换数量：处理非数字内容
+        try:
+            qty_val = int(qty) if qty else 0
+        except (ValueError, TypeError):
+            qty_val = 0
+
         orders.append({
             'order_no': str(order_no),
             'spec_name': str(spec_name),
-            'spec_code': spec_code or '',
-            'qty': int(qty) if qty else 0,
+            'spec_code': str(spec_code) if spec_code else '',
+            'qty': qty_val,
             'remark': str(remark) if remark else '',
             'size': size,
         })
