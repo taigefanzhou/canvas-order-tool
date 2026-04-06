@@ -71,6 +71,8 @@ def process_orders(input_path, output_dir):
             col_map['qty'] = idx
         elif name in ('备注', '买家备注', '卖家备注'):
             col_map['remark'] = idx
+        elif name in ('买家留言',):
+            col_map['buyer_msg'] = idx
 
     missing = [k for k in ('order_no', 'spec_name', 'qty') if k not in col_map]
     if missing:
@@ -88,11 +90,25 @@ def process_orders(input_path, output_dir):
         spec_code = row[col_map.get('spec_code', -1)] if col_map.get('spec_code') is not None and col_map.get('spec_code') < len(row) else ''
         qty = row[col_map['qty']]
         remark = row[col_map.get('remark', -1)] if col_map.get('remark') is not None and col_map.get('remark') < len(row) else ''
+        buyer_msg = row[col_map.get('buyer_msg', -1)] if col_map.get('buyer_msg') is not None and col_map.get('buyer_msg') < len(row) else ''
 
         if not order_no or not spec_name:
             continue
 
-        size = extract_size(str(spec_name))
+        # 跳过非帆布商品（如补收差价等）
+        spec_str = str(spec_name)
+        if '差价' in spec_str or '补' in spec_str:
+            continue
+
+        size = extract_size(spec_str)
+
+        # 合并备注和买家留言
+        remark_parts = []
+        if remark:
+            remark_parts.append(str(remark))
+        if buyer_msg:
+            remark_parts.append(str(buyer_msg))
+        remark_text = ' | '.join(remark_parts)
         try:
             qty_val = int(qty) if qty else 0
         except (ValueError, TypeError):
@@ -103,7 +119,7 @@ def process_orders(input_path, output_dir):
             'spec_name': str(spec_name),
             'spec_code': str(spec_code) if spec_code else '',
             'qty': qty_val,
-            'remark': str(remark) if remark else '',
+            'remark': remark_text,
             'size': size,
         })
 
