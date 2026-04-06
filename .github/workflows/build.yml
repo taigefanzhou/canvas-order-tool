@@ -14,17 +14,17 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.8'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
       - name: Build EXE
         run: |
-          pyinstaller --onefile --windowed --name "帆布订单整理工具" "帆布订单整理.py"
+          pyinstaller --onefile --windowed --name "丽群帆布纺织电商统计系统" --icon=logo.ico --add-data "logo.png;." --add-data "logo.ico;." "帆布订单整理.py"
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: 帆布订单整理工具
-          path: dist/帆布订单整理工具.exe
+          name: 丽群帆布纺织电商统计系统
+          path: dist/丽群帆布纺织电商统计系统.exe
