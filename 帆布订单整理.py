@@ -17,6 +17,7 @@ from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, StringVar
+from PIL import Image, ImageTk
 
 
 def extract_size(spec_name):
@@ -266,6 +267,13 @@ def open_folder(path):
         subprocess.call(["xdg-open", path])
 
 
+def resource_path(filename):
+    """获取资源文件路径（兼容 PyInstaller 打包）"""
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, filename)
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
 class OrderApp:
     # 配色方案
     BG = "#f0f4f8"
@@ -283,7 +291,14 @@ class OrderApp:
         self.root.configure(bg=self.BG)
         self.root.resizable(False, False)
 
-        w, h = 600, 530
+        # 设置窗口图标
+        try:
+            ico_path = resource_path("logo.ico")
+            self.root.iconbitmap(ico_path)
+        except Exception:
+            pass
+
+        w, h = 600, 580
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
@@ -342,8 +357,19 @@ class OrderApp:
         return card
 
     def _build_ui(self):
-        # 标题
-        ttk.Label(self.root, text="丽群帆布纺织电商统计系统", style="Title.TLabel").pack(pady=(20, 12))
+        # 顶部标题区域：logo + 文字
+        header = tk.Frame(self.root, bg=self.BG)
+        header.pack(pady=(16, 10))
+
+        try:
+            logo_img = Image.open(resource_path("logo.png"))
+            logo_img = logo_img.resize((48, 48), Image.LANCZOS)
+            self._logo_photo = ImageTk.PhotoImage(logo_img)
+            tk.Label(header, image=self._logo_photo, bg=self.BG).pack(side="left", padx=(0, 10))
+        except Exception:
+            pass
+
+        ttk.Label(header, text="丽群帆布纺织电商统计系统", style="Title.TLabel").pack(side="left")
 
         # 选择文件卡片
         file_card = self._make_card(self.root, "原始数据文件", pady=(0, 10))
