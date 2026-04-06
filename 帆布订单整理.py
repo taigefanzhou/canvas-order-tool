@@ -1,5 +1,5 @@
 """
-帆布订单整理工具
+丽群帆布纺织电商统计系统
 功能：读取帆布订单原始数据Excel，按尺寸分组排序，生成带小计和汇总的明细表
 """
 
@@ -279,7 +279,7 @@ class OrderApp:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("帆布订单整理工具")
+        self.root.title("丽群帆布纺织电商统计系统")
         self.root.configure(bg=self.BG)
         self.root.resizable(False, False)
 
@@ -343,7 +343,7 @@ class OrderApp:
 
     def _build_ui(self):
         # 标题
-        ttk.Label(self.root, text="帆布订单整理工具", style="Title.TLabel").pack(pady=(20, 12))
+        ttk.Label(self.root, text="丽群帆布纺织电商统计系统", style="Title.TLabel").pack(pady=(20, 12))
 
         # 选择文件卡片
         file_card = self._make_card(self.root, "原始数据文件", pady=(0, 10))
