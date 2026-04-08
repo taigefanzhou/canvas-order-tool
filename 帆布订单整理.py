@@ -74,6 +74,8 @@ def process_orders(input_path, output_dir):
             col_map['remark'] = idx
         elif name in ('买家留言',):
             col_map['buyer_msg'] = idx
+        elif name in ('快递单号', '运单号', '物流单号'):
+            col_map['tracking_no'] = idx
 
     missing = [k for k in ('order_no', 'spec_name', 'qty') if k not in col_map]
     if missing:
@@ -92,6 +94,7 @@ def process_orders(input_path, output_dir):
         qty = row[col_map['qty']]
         remark = row[col_map.get('remark', -1)] if col_map.get('remark') is not None and col_map.get('remark') < len(row) else ''
         buyer_msg = row[col_map.get('buyer_msg', -1)] if col_map.get('buyer_msg') is not None and col_map.get('buyer_msg') < len(row) else ''
+        tracking_no = row[col_map.get('tracking_no', -1)] if col_map.get('tracking_no') is not None and col_map.get('tracking_no') < len(row) else ''
 
         if not order_no or not spec_name:
             continue
@@ -120,6 +123,7 @@ def process_orders(input_path, output_dir):
             'spec_name': str(spec_name),
             'spec_code': str(spec_code) if spec_code else '',
             'qty': qty_val,
+            'tracking_no': str(tracking_no) if tracking_no else '',
             'remark': remark_text,
             'size': size,
         })
@@ -148,12 +152,12 @@ def process_orders(input_path, output_dir):
     )
 
     # 表头增加"平方数"列
-    headers = ['序号', '订单号', '规格名称', '规格编码', '数量', '备注', '', '尺寸', '总数量', '总平方数']
+    headers = ['序号', '订单号', '规格名称', '规格编码', '数量', '快递单号', '备注', '', '尺寸', '总数量', '总平方数']
     for col, h in enumerate(headers, 1):
         cell = out_ws.cell(row=1, column=col, value=h)
         cell.font = header_font
         cell.alignment = Alignment(horizontal='center')
-        if col <= 6 or col >= 8:
+        if col <= 7 or col >= 9:
             cell.border = thin_border
 
     current_row = 2
@@ -179,7 +183,8 @@ def process_orders(input_path, output_dir):
             c5 = out_ws.cell(row=current_row, column=5, value=order['qty'])
             c5.border = thin_border
             c5.alignment = Alignment(horizontal='center')
-            out_ws.cell(row=current_row, column=6, value=order['remark']).border = thin_border
+            out_ws.cell(row=current_row, column=6, value=order['tracking_no']).border = thin_border
+            out_ws.cell(row=current_row, column=7, value=order['remark']).border = thin_border
             seq += 1
             current_row += 1
 
@@ -187,7 +192,7 @@ def process_orders(input_path, output_dir):
         c1 = out_ws.cell(row=current_row, column=1, value=subtotal_label)
         c1.font = subtotal_font
         c1.fill = subtotal_fill
-        for col in range(1, 7):
+        for col in range(1, 8):
             out_ws.cell(row=current_row, column=col).fill = subtotal_fill
             out_ws.cell(row=current_row, column=col).border = thin_border
             out_ws.cell(row=current_row, column=col).font = subtotal_font
@@ -205,22 +210,22 @@ def process_orders(input_path, output_dir):
     c5.font = Font(bold=True, size=12)
     c5.alignment = Alignment(horizontal='center')
 
-    # 右侧汇总表（H-J列）
+    # 右侧汇总表（I-K列）
     for i, (size, qty, area) in enumerate(summary_data):
         r = i + 2
-        c8 = out_ws.cell(row=r, column=8, value=size)
-        c8.border = thin_border
-        c8.alignment = Alignment(horizontal='center')
-        c9 = out_ws.cell(row=r, column=9, value=qty)
+        c9 = out_ws.cell(row=r, column=9, value=size)
         c9.border = thin_border
         c9.alignment = Alignment(horizontal='center')
-        c10 = out_ws.cell(row=r, column=10, value=round(area, 2))
+        c10 = out_ws.cell(row=r, column=10, value=qty)
         c10.border = thin_border
         c10.alignment = Alignment(horizontal='center')
+        c11 = out_ws.cell(row=r, column=11, value=round(area, 2))
+        c11.border = thin_border
+        c11.alignment = Alignment(horizontal='center')
 
     # 汇总总计行
     summary_total_row = len(summary_data) + 2
-    for col_idx, val in [(8, "总计"), (9, total_qty), (10, round(total_area, 2))]:
+    for col_idx, val in [(9, "总计"), (10, total_qty), (11, round(total_area, 2))]:
         c = out_ws.cell(row=summary_total_row, column=col_idx, value=val)
         c.font = Font(bold=True)
         c.border = thin_border
@@ -232,11 +237,12 @@ def process_orders(input_path, output_dir):
     out_ws.column_dimensions['C'].width = 55
     out_ws.column_dimensions['D'].width = 12
     out_ws.column_dimensions['E'].width = 8
-    out_ws.column_dimensions['F'].width = 35
-    out_ws.column_dimensions['G'].width = 3
-    out_ws.column_dimensions['H'].width = 14
-    out_ws.column_dimensions['I'].width = 10
-    out_ws.column_dimensions['J'].width = 12
+    out_ws.column_dimensions['F'].width = 22
+    out_ws.column_dimensions['G'].width = 35
+    out_ws.column_dimensions['H'].width = 3
+    out_ws.column_dimensions['I'].width = 14
+    out_ws.column_dimensions['J'].width = 10
+    out_ws.column_dimensions['K'].width = 12
 
     today = datetime.now().strftime("%Y%m%d")
     base_name = f"帆布订单明细_{today}"
