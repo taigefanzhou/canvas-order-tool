@@ -68,7 +68,7 @@ def process_orders(input_path, output_dir):
             col_map['spec_name'] = idx
         elif name in ('规格编码', '编码'):
             col_map['spec_code'] = idx
-        elif name in ('数量', '购买数量', '订购数量'):
+        elif name in ('数量', '购买数量', '订购数量', '商品数量'):
             col_map['qty'] = idx
         elif name in ('备注', '买家备注', '卖家备注'):
             col_map['remark'] = idx
@@ -138,6 +138,10 @@ def process_orders(input_path, output_dir):
 
     sorted_sizes = sorted(grouped.keys(), key=size_sort_key)
 
+    # 按面积拆分为小件组（≤10m²）和大件组（>10m²）
+    small_sizes = [s for s in sorted_sizes if parse_size_area(s) <= 10]
+    large_sizes = [s for s in sorted_sizes if parse_size_area(s) > 10]
+
     # 创建输出工作簿
     out_wb = openpyxl.Workbook()
     out_ws = out_wb.active
@@ -146,12 +150,18 @@ def process_orders(input_path, output_dir):
     header_font = Font(bold=True, size=11)
     subtotal_font = Font(bold=True, size=11, color="000000")
     subtotal_fill = PatternFill(start_color="FFFFCC", end_color="FFFFCC", fill_type="solid")
+    section_font = Font(bold=True, size=12, color="FFFFFF")
+    section_fill_small = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    section_fill_large = PatternFill(start_color="C00000", end_color="C00000", fill_type="solid")
+    block_total_font = Font(bold=True, size=11, color="FFFFFF")
+    block_total_fill_small = PatternFill(start_color="5B9BD5", end_color="5B9BD5", fill_type="solid")
+    block_total_fill_large = PatternFill(start_color="E04040", end_color="E04040", fill_type="solid")
     thin_border = Border(
         left=Side(style='thin'), right=Side(style='thin'),
         top=Side(style='thin'), bottom=Side(style='thin')
     )
 
-    # 表头增加"平方数"列
+    # 表头
     headers = ['序号', '订单号', '规格名称', '规格编码', '数量', '快递单号', '备注', '', '尺寸', '总数量', '总平方数']
     for col, h in enumerate(headers, 1):
         cell = out_ws.cell(row=1, column=col, value=h)
@@ -164,44 +174,118 @@ def process_orders(input_path, output_dir):
     seq = 1
     total_qty = 0
     total_area = 0.0
-    summary_data = []
+    summary_data_small = []
+    summary_data_large = []
 
-    for size in sorted_sizes:
-        group = grouped[size]
+    def write_section_title(ws, row, title, fill):
+        """写分区标题行"""
+        c = ws.cell(row=row, column=1, value=title)
+        c.font = section_font
+        c.fill = fill
+        c.alignment = Alignment(horizontal='left')
+        for col in range(1, 8):
+            ws.cell(row=row, column=col).fill = fill
+            ws.cell(row=row, column=col).font = section_font
+            ws.cell(row=row, column=col).border = thin_border
+        return row + 1
+
+    def write_block_total(ws, row, label, qty, area, font, fill):
+        """写区块合计行"""
+        c1 = ws.cell(row=row, column=1, value=label)
+        c1.font = font
+        c1.fill = fill
+        for col in range(1, 8):
+            ws.cell(row=row, column=col).fill = fill
+            ws.cell(row=row, column=col).border = thin_border
+            ws.cell(row=row, column=col).font = font
+        c5 = ws.cell(row=row, column=5, value=qty)
+        c5.font = font
+        c5.fill = fill
+        c5.border = thin_border
+        c5.alignment = Alignment(horizontal='center')
+        return row + 1
+
+    def write_size_group(ws, row, seq_val, size, group, grouped_data):
+        """写一个尺寸的明细和小计，返回 (new_row, new_seq, group_qty, group_area)"""
         group_qty = sum(o['qty'] for o in group)
         area_per = parse_size_area(size)
         group_area = area_per * group_qty
-        total_qty += group_qty
-        total_area += group_area
-        summary_data.append((size, group_qty, group_area))
 
         for order in group:
-            out_ws.cell(row=current_row, column=1, value=seq).border = thin_border
-            out_ws.cell(row=current_row, column=2, value=order['order_no']).border = thin_border
-            out_ws.cell(row=current_row, column=3, value=order['spec_name']).border = thin_border
-            out_ws.cell(row=current_row, column=4, value=order['spec_code']).border = thin_border
-            c5 = out_ws.cell(row=current_row, column=5, value=order['qty'])
+            ws.cell(row=row, column=1, value=seq_val).border = thin_border
+            ws.cell(row=row, column=2, value=order['order_no']).border = thin_border
+            ws.cell(row=row, column=3, value=order['spec_name']).border = thin_border
+            ws.cell(row=row, column=4, value=order['spec_code']).border = thin_border
+            c5 = ws.cell(row=row, column=5, value=order['qty'])
             c5.border = thin_border
             c5.alignment = Alignment(horizontal='center')
-            out_ws.cell(row=current_row, column=6, value=order['tracking_no']).border = thin_border
-            out_ws.cell(row=current_row, column=7, value=order['remark']).border = thin_border
-            seq += 1
-            current_row += 1
+            ws.cell(row=row, column=6, value=order['tracking_no']).border = thin_border
+            ws.cell(row=row, column=7, value=order['remark']).border = thin_border
+            seq_val += 1
+            row += 1
 
         subtotal_label = f"【{size}】小计"
-        c1 = out_ws.cell(row=current_row, column=1, value=subtotal_label)
+        c1 = ws.cell(row=row, column=1, value=subtotal_label)
         c1.font = subtotal_font
         c1.fill = subtotal_fill
         for col in range(1, 8):
-            out_ws.cell(row=current_row, column=col).fill = subtotal_fill
-            out_ws.cell(row=current_row, column=col).border = thin_border
-            out_ws.cell(row=current_row, column=col).font = subtotal_font
-        c5 = out_ws.cell(row=current_row, column=5, value=group_qty)
+            ws.cell(row=row, column=col).fill = subtotal_fill
+            ws.cell(row=row, column=col).border = thin_border
+            ws.cell(row=row, column=col).font = subtotal_font
+        c5 = ws.cell(row=row, column=5, value=group_qty)
         c5.font = subtotal_font
         c5.fill = subtotal_fill
         c5.border = thin_border
         c5.alignment = Alignment(horizontal='center')
-        current_row += 1
+        row += 1
+
+        return row, seq_val, group_qty, group_area
+
+    # ── 小件区块（≤10平方米）──
+    block_small_qty = 0
+    block_small_area = 0.0
+
+    if small_sizes:
+        current_row = write_section_title(out_ws, current_row, "≤ 10平方米（含）", section_fill_small)
+
+        for size in small_sizes:
+            group = grouped[size]
+            current_row, seq, gq, ga = write_size_group(out_ws, current_row, seq, size, group, None)
+            block_small_qty += gq
+            block_small_area += ga
+            summary_data_small.append((size, gq, ga))
+
+        current_row = write_block_total(
+            out_ws, current_row,
+            f"10平方米以下（含）合计",
+            block_small_qty, block_small_area,
+            block_total_font, block_total_fill_small
+        )
+        current_row += 1  # 空行分隔
+
+    # ── 大件区块（>10平方米）──
+    block_large_qty = 0
+    block_large_area = 0.0
+
+    if large_sizes:
+        current_row = write_section_title(out_ws, current_row, "> 10平方米", section_fill_large)
+
+        for size in large_sizes:
+            group = grouped[size]
+            current_row, seq, gq, ga = write_size_group(out_ws, current_row, seq, size, group, None)
+            block_large_qty += gq
+            block_large_area += ga
+            summary_data_large.append((size, gq, ga))
+
+        current_row = write_block_total(
+            out_ws, current_row,
+            f"10平方米以上合计",
+            block_large_qty, block_large_area,
+            block_total_font, block_total_fill_large
+        )
+
+    total_qty = block_small_qty + block_large_qty
+    total_area = block_small_area + block_large_area
 
     # 总计行
     current_row += 1
@@ -210,23 +294,69 @@ def process_orders(input_path, output_dir):
     c5.font = Font(bold=True, size=12)
     c5.alignment = Alignment(horizontal='center')
 
-    # 右侧汇总表（I-K列）
-    for i, (size, qty, area) in enumerate(summary_data):
-        r = i + 2
-        c9 = out_ws.cell(row=r, column=9, value=size)
-        c9.border = thin_border
-        c9.alignment = Alignment(horizontal='center')
-        c10 = out_ws.cell(row=r, column=10, value=qty)
-        c10.border = thin_border
-        c10.alignment = Alignment(horizontal='center')
-        c11 = out_ws.cell(row=r, column=11, value=round(area, 2))
-        c11.border = thin_border
-        c11.alignment = Alignment(horizontal='center')
+    # 右侧汇总表（I-K列）—— 分两段
+    summary_row = 2
+
+    # 小件汇总
+    if summary_data_small:
+        c_title = out_ws.cell(row=summary_row, column=9, value="≤10m²")
+        c_title.font = Font(bold=True, color="FFFFFF")
+        c_title.fill = section_fill_small
+        c_title.alignment = Alignment(horizontal='center')
+        c_title.border = thin_border
+        for ci in (10, 11):
+            out_ws.cell(row=summary_row, column=ci).fill = section_fill_small
+            out_ws.cell(row=summary_row, column=ci).border = thin_border
+        summary_row += 1
+
+        for size, qty, area in summary_data_small:
+            for col_idx, val in [(9, size), (10, qty), (11, round(area, 2))]:
+                c = out_ws.cell(row=summary_row, column=col_idx, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+            summary_row += 1
+
+        # 小件小计
+        for col_idx, val in [(9, "小计"), (10, block_small_qty), (11, round(block_small_area, 2))]:
+            c = out_ws.cell(row=summary_row, column=col_idx, value=val)
+            c.font = Font(bold=True)
+            c.fill = block_total_fill_small
+            c.font = Font(bold=True, color="FFFFFF")
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+        summary_row += 2  # 空行分隔
+
+    # 大件汇总
+    if summary_data_large:
+        c_title = out_ws.cell(row=summary_row, column=9, value=">10m²")
+        c_title.font = Font(bold=True, color="FFFFFF")
+        c_title.fill = section_fill_large
+        c_title.alignment = Alignment(horizontal='center')
+        c_title.border = thin_border
+        for ci in (10, 11):
+            out_ws.cell(row=summary_row, column=ci).fill = section_fill_large
+            out_ws.cell(row=summary_row, column=ci).border = thin_border
+        summary_row += 1
+
+        for size, qty, area in summary_data_large:
+            for col_idx, val in [(9, size), (10, qty), (11, round(area, 2))]:
+                c = out_ws.cell(row=summary_row, column=col_idx, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+            summary_row += 1
+
+        # 大件小计
+        for col_idx, val in [(9, "小计"), (10, block_large_qty), (11, round(block_large_area, 2))]:
+            c = out_ws.cell(row=summary_row, column=col_idx, value=val)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = block_total_fill_large
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+        summary_row += 2
 
     # 汇总总计行
-    summary_total_row = len(summary_data) + 2
     for col_idx, val in [(9, "总计"), (10, total_qty), (11, round(total_area, 2))]:
-        c = out_ws.cell(row=summary_total_row, column=col_idx, value=val)
+        c = out_ws.cell(row=summary_row, column=col_idx, value=val)
         c.font = Font(bold=True)
         c.border = thin_border
         c.alignment = Alignment(horizontal='center')
