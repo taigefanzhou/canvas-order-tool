@@ -22,6 +22,14 @@ from PIL import Image, ImageTk
 
 
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".liqun_canvas_order_tool.json")
+SMALL_STOCK_SIZES = ['2米*2米', '2米*3米', '2米*4米', '2米*5米', '3米*3米']
+LARGE_STOCK_SIZES = [
+    '2米*6米', '2米*10米', '3米*4米', '3米*5米', '3米*6米', '3米*10米',
+    '4米*4米', '4米*5米', '4米*6米', '4米*8米',
+    '5米*5米', '5米*6米', '5米*7米', '5米*8米', '5米*10米',
+    '6米*6米', '6米*8米', '6米*10米', '7米*8米', '10米*10米',
+]
+ALL_STOCK_SIZES = SMALL_STOCK_SIZES + LARGE_STOCK_SIZES
 
 
 def load_config():
@@ -86,47 +94,17 @@ def size_sort_key(size_str):
     return (9999, 9999)
 
 
-def load_inventory(inventory_path):
-    """读取库存表，返回库存信息。库存表可包含：尺寸/规格/规格名称 + 库存数量/库存/数量。"""
-    if not inventory_path:
-        return {}, [], None, None, []
-
-    wb = openpyxl.load_workbook(inventory_path, data_only=True)
-    ws = wb.active
-    header_row = [str(cell.value).strip() if cell.value else '' for cell in ws[1]]
-
-    size_col = None
-    qty_col = None
-    for idx, name in enumerate(header_row):
-        if name in ('尺寸', '规格尺寸', '规格', '规格名称', '商品规格'):
-            size_col = idx
-        elif name in ('库存数量', '库存', '现有库存', '可用库存', '数量', '库存件数'):
-            qty_col = idx
-
-    if size_col is None or qty_col is None:
-        raise ValueError(
-            "库存表表头中需要包含尺寸列和库存数量列。\n"
-            "尺寸列可命名为：尺寸、规格尺寸、规格、规格名称、商品规格\n"
-            "库存列可命名为：库存数量、库存、现有库存、可用库存、数量、库存件数\n"
-            f"当前表头：{header_row}"
-        )
-
+def normalize_inventory(raw_inventory):
+    """整理本机保存的库存数据，返回 {尺寸: 库存数量}。"""
     inventory = {}
-    inventory_rows = []
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
-        raw_size = row[size_col] if size_col < len(row) else ''
-        raw_qty = row[qty_col] if qty_col < len(row) else 0
-        if not raw_size:
-            continue
-
+    for raw_size, raw_qty in (raw_inventory or {}).items():
         size = extract_size(raw_size)
         if size == "定制":
             size = str(raw_size).strip()
         qty = to_number(raw_qty)
-        inventory[size] = inventory.get(size, 0) + qty
-        inventory_rows.append((list(row), size, qty))
-
-    return inventory, inventory_rows, size_col, qty_col, header_row
+        if qty:
+            inventory[size] = inventory.get(size, 0) + qty
+    return inventory
 
 
 def unique_output_path(output_dir, base_name):
@@ -139,49 +117,9 @@ def unique_output_path(output_dir, base_name):
     return output_path
 
 
-def create_inventory_template(output_dir):
-    """生成库存表模板。"""
-    today = datetime.now().strftime("%Y%m%d")
-    output_path = unique_output_path(output_dir, f"库存模板_{today}")
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "库存模板"
-
-    header_font = Font(bold=True, size=11)
-    thin_border = Border(
-        left=Side(style='thin'), right=Side(style='thin'),
-        top=Side(style='thin'), bottom=Side(style='thin')
-    )
-    headers = ['尺寸', '库存数量', '仓位', '备注']
-    examples = [
-        ['2米*3米', 0, '', '尺寸也可写 2*3'],
-        ['4米*4米', 0, '', '库存数量填现有张数'],
-    ]
-
-    for col, h in enumerate(headers, 1):
-        c = ws.cell(row=1, column=col, value=h)
-        c.font = header_font
-        c.alignment = Alignment(horizontal='center')
-        c.border = thin_border
-
-    for row_idx, row_values in enumerate(examples, 2):
-        for col, val in enumerate(row_values, 1):
-            c = ws.cell(row=row_idx, column=col, value=val)
-            c.border = thin_border
-            c.alignment = Alignment(horizontal='center')
-
-    ws.column_dimensions['A'].width = 16
-    ws.column_dimensions['B'].width = 12
-    ws.column_dimensions['C'].width = 12
-    ws.column_dimensions['D'].width = 28
-    ws.freeze_panes = "A2"
-    wb.save(output_path)
-    return output_path
-
-
-def process_orders(input_path, output_dir, inventory_path=None):
+def process_orders(input_path, output_dir, inventory_data=None):
     """处理订单数据"""
-    inventory, inventory_rows, inventory_size_col, inventory_qty_col, inventory_headers = load_inventory(inventory_path)
+    inventory = normalize_inventory(inventory_data)
     wb = openpyxl.load_workbook(input_path)
     ws = wb.active
 
@@ -604,66 +542,6 @@ def process_orders(input_path, output_dir, inventory_path=None):
         abnormal_ws.column_dimensions['G'].width = 35
         abnormal_ws.freeze_panes = "A2"
 
-    updated_inventory_path = None
-    if inventory_path:
-        today = datetime.now().strftime("%Y%m%d")
-        updated_inventory_path = unique_output_path(output_dir, f"库存扣减后_{today}")
-        updated_wb = openpyxl.Workbook()
-        updated_ws = updated_wb.active
-        updated_ws.title = "库存扣减后"
-
-        updated_headers = list(inventory_headers)
-        updated_headers.extend(['今日订单数量', '加工后剩余库存'])
-        for col, h in enumerate(updated_headers, 1):
-            c = updated_ws.cell(row=1, column=col, value=h)
-            c.font = header_font
-            c.alignment = Alignment(horizontal='center')
-            c.border = thin_border
-
-        order_qty_by_size = {size: sum(o['qty'] for o in grouped.get(size, [])) for size in sorted_sizes}
-        used_sizes = set()
-        row_idx = 2
-        for row_values, size, stock_qty in inventory_rows:
-            values = list(row_values)
-            if len(values) < len(inventory_headers):
-                values.extend([''] * (len(inventory_headers) - len(values)))
-            order_qty = order_qty_by_size.get(size, 0)
-            remain_qty = max(stock_qty - order_qty, 0)
-            if inventory_qty_col is not None and inventory_qty_col < len(values):
-                values[inventory_qty_col] = remain_qty
-            values.extend([order_qty, remain_qty])
-            for col, val in enumerate(values, 1):
-                c = updated_ws.cell(row=row_idx, column=col, value=val)
-                c.border = thin_border
-                c.alignment = Alignment(horizontal='center')
-            used_sizes.add(size)
-            row_idx += 1
-
-        for size in sorted_sizes:
-            if size == "定制":
-                continue
-            if size in used_sizes:
-                continue
-            order_qty = order_qty_by_size.get(size, 0)
-            if order_qty <= 0:
-                continue
-            values = [''] * len(inventory_headers)
-            if inventory_size_col is not None and inventory_size_col < len(values):
-                values[inventory_size_col] = size
-            if inventory_qty_col is not None and inventory_qty_col < len(values):
-                values[inventory_qty_col] = 0
-            values.extend([order_qty, 0])
-            for col, val in enumerate(values, 1):
-                c = updated_ws.cell(row=row_idx, column=col, value=val)
-                c.border = thin_border
-                c.alignment = Alignment(horizontal='center')
-            row_idx += 1
-
-        for col in range(1, len(updated_headers) + 1):
-            updated_ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
-
-        updated_wb.save(updated_inventory_path)
-
     # 列宽
     out_ws.column_dimensions['A'].width = 16
     out_ws.column_dimensions['B'].width = 28
@@ -687,7 +565,7 @@ def process_orders(input_path, output_dir, inventory_path=None):
     out_wb.save(output_path)
     return (
         output_path, len(orders), total_qty, len(sorted_sizes), round(total_area, 2),
-        total_need_qty, round(total_need_area, 2), updated_inventory_path, len(abnormal_orders)
+        total_need_qty, round(total_need_area, 2), len(abnormal_orders)
     )
 
 
@@ -739,14 +617,12 @@ class OrderApp:
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         self.input_path = StringVar()
-        self.inventory_path = StringVar()
         self.output_dir = StringVar()
+        self.inventory_status = StringVar()
         self.output_path = None
-        self.updated_inventory_path = None
         self.config = load_config()
-        last_inventory_path = self.config.get("last_inventory_path", "")
-        if last_inventory_path and os.path.exists(last_inventory_path):
-            self.inventory_path.set(last_inventory_path)
+        self.config.setdefault("inventory", {})
+        self._refresh_inventory_status()
 
         self._setup_styles()
         self._build_ui()
@@ -822,19 +698,15 @@ class OrderApp:
         ttk.Button(file_row, text="选择文件", style="Primary.TButton",
                    command=self._select_file, width=10).pack(side="right")
 
-        # 库存文件卡片（可选）
-        inventory_card = self._make_card(self.root, "库存数据文件（可选）", pady=(0, 10))
+        # 库存维护卡片
+        inventory_card = self._make_card(self.root, "库存数据", pady=(0, 10))
         inventory_row = tk.Frame(inventory_card, bg=self.CARD_BG)
         inventory_row.pack(fill="x")
-        self.inventory_entry = ttk.Entry(inventory_row, textvariable=self.inventory_path,
+        self.inventory_entry = ttk.Entry(inventory_row, textvariable=self.inventory_status,
                                          state="readonly", style="Path.TEntry")
         self.inventory_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ttk.Button(inventory_row, text="选择库存", style="Primary.TButton",
-                   command=self._select_inventory_file, width=10).pack(side="right")
-        ttk.Button(inventory_row, text="清空", style="Info.TButton",
-                   command=self._clear_inventory_file, width=7).pack(side="right", padx=(0, 6))
-        ttk.Button(inventory_row, text="库存模板", style="Info.TButton",
-                   command=self._create_inventory_template, width=9).pack(side="right", padx=(0, 6))
+        ttk.Button(inventory_row, text="录入/预览", style="Primary.TButton",
+                   command=self._open_inventory_editor, width=12).pack(side="right")
 
         # 保存位置卡片
         save_card = self._make_card(self.root, "保存位置", pady=(0, 10))
@@ -876,29 +748,106 @@ class OrderApp:
             if not self.output_dir.get():
                 self.output_dir.set(os.path.dirname(path))
 
-    def _select_inventory_file(self):
-        path = filedialog.askopenfilename(
-            title="选择库存数据文件",
-            filetypes=[("Excel文件", "*.xlsx *.xls"), ("所有文件", "*.*")],
+    def _refresh_inventory_status(self):
+        inventory = normalize_inventory(self.config.get("inventory", {}))
+        size_count = len(inventory)
+        total_qty = sum(inventory.values())
+        self.inventory_status.set(f"已保存 {size_count} 种尺寸库存，共 {total_qty:g} 张")
+
+    def _open_inventory_editor(self):
+        editor = tk.Toplevel(self.root)
+        editor.title("库存录入/预览")
+        editor.configure(bg=self.BG)
+        editor.geometry("760x640")
+        editor.transient(self.root)
+        editor.grab_set()
+
+        current_inventory = normalize_inventory(self.config.get("inventory", {}))
+        entries = {}
+
+        left = tk.Frame(editor, bg=self.BG)
+        left.pack(side="left", fill="both", expand=True, padx=(16, 8), pady=14)
+        right = tk.Frame(editor, bg=self.BG)
+        right.pack(side="right", fill="both", expand=True, padx=(8, 16), pady=14)
+
+        ttk.Label(left, text="库存数量", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+        input_canvas = tk.Canvas(left, bg=self.BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(left, orient="vertical", command=input_canvas.yview)
+        input_frame = tk.Frame(input_canvas, bg=self.BG)
+        input_frame.bind(
+            "<Configure>",
+            lambda _event: input_canvas.configure(scrollregion=input_canvas.bbox("all"))
         )
-        if path:
-            self.inventory_path.set(path)
-            self.config["last_inventory_path"] = path
+        input_canvas.create_window((0, 0), window=input_frame, anchor="nw")
+        input_canvas.configure(yscrollcommand=scrollbar.set)
+        input_canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def add_section(title, sizes, row):
+            label = tk.Label(input_frame, text=title, bg=self.PRIMARY, fg="white",
+                             font=("Microsoft YaHei", 10, "bold"), padx=8, pady=4)
+            label.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+            row += 1
+            for size in sizes:
+                tk.Label(input_frame, text=size, bg=self.BG, fg=self.TEXT,
+                         font=("Microsoft YaHei", 10)).grid(row=row, column=0, sticky="w", pady=3)
+                var = StringVar(value=str(current_inventory.get(size, "")))
+                entry = ttk.Entry(input_frame, textvariable=var, width=10)
+                entry.grid(row=row, column=1, sticky="e", padx=(12, 4), pady=3)
+                entries[size] = var
+                row += 1
+            return row
+
+        next_row = add_section("≤10平方米", SMALL_STOCK_SIZES, 0)
+        add_section(">10平方米", LARGE_STOCK_SIZES, next_row + 1)
+
+        ttk.Label(right, text="库存预览", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
+        preview = ttk.Treeview(right, columns=("size", "qty"), show="headings", height=22)
+        preview.heading("size", text="尺寸")
+        preview.heading("qty", text="库存数量")
+        preview.column("size", width=130, anchor="center")
+        preview.column("qty", width=90, anchor="center")
+        preview.pack(fill="both", expand=True)
+
+        def collect_inventory():
+            inventory = {}
+            for size, var in entries.items():
+                qty = to_number(var.get())
+                if qty:
+                    inventory[size] = qty
+            return inventory
+
+        def refresh_preview():
+            preview.delete(*preview.get_children())
+            inventory = collect_inventory()
+            for size in sorted(inventory.keys(), key=size_sort_key):
+                preview.insert("", "end", values=(size, f"{inventory[size]:g}"))
+
+        def save_inventory():
+            inventory = collect_inventory()
+            self.config["inventory"] = inventory
             save_config(self.config)
+            self._refresh_inventory_status()
+            refresh_preview()
+            messagebox.showinfo("完成", "库存数量已保存")
 
-    def _clear_inventory_file(self):
-        self.inventory_path.set("")
-        self.config["last_inventory_path"] = ""
-        save_config(self.config)
+        def clear_inventory():
+            for var in entries.values():
+                var.set("")
+            refresh_preview()
 
-    def _create_inventory_template(self):
-        output_dir = self.output_dir.get() or os.path.expanduser("~/Desktop")
-        try:
-            template_path = create_inventory_template(output_dir)
-            messagebox.showinfo("完成", f"库存模板已生成：\n{template_path}")
-            open_folder(output_dir)
-        except Exception as e:
-            messagebox.showerror("失败", f"生成库存模板失败：\n{e}")
+        button_row = tk.Frame(right, bg=self.BG)
+        button_row.pack(fill="x", pady=(10, 0))
+        ttk.Button(button_row, text="保存", style="Success.TButton",
+                   command=save_inventory, width=10).pack(side="left")
+        ttk.Button(button_row, text="刷新预览", style="Info.TButton",
+                   command=refresh_preview, width=10).pack(side="left", padx=(8, 0))
+        ttk.Button(button_row, text="清空", style="Info.TButton",
+                   command=clear_inventory, width=8).pack(side="left", padx=(8, 0))
+        ttk.Button(button_row, text="关闭", style="Primary.TButton",
+                   command=editor.destroy, width=8).pack(side="right")
+
+        refresh_preview()
 
     def _select_output_dir(self):
         initial = self.output_dir.get() or os.path.expanduser("~")
@@ -924,10 +873,12 @@ class OrderApp:
 
     def _do_process(self):
         try:
-            inventory_path = self.inventory_path.get() or None
-            result = process_orders(self.input_path.get(), self.output_dir.get(), inventory_path)
+            result = process_orders(
+                self.input_path.get(),
+                self.output_dir.get(),
+                self.config.get("inventory", {})
+            )
             self.output_path = result[0]
-            self.updated_inventory_path = result[7]
             self.root.after(0, self._on_success, result)
         except Exception as e:
             self.root.after(0, self._on_error, str(e))
@@ -935,9 +886,8 @@ class OrderApp:
     def _on_success(self, result):
         (
             output_path, order_count, total_qty, size_count, total_area,
-            need_qty, need_area, updated_inventory_path, abnormal_count
+            need_qty, need_area, abnormal_count
         ) = result
-        inventory_text = f"\n已生成扣减后库存：{updated_inventory_path}" if updated_inventory_path else ""
         abnormal_text = f"\n异常尺寸：{abnormal_count} 条（请看异常订单表）" if abnormal_count else ""
         self.progress.stop()
         self.result_label.config(
@@ -947,7 +897,6 @@ class OrderApp:
                 f"总数量：{total_qty}    |    总平方数：{total_area} m\u00b2\n"
                 f"需加工数量：{need_qty}    |    需加工平方数：{need_area} m\u00b2\n"
                 f"已保存到：{output_path}"
-                f"{inventory_text}"
                 f"{abnormal_text}"
             ),
         )
