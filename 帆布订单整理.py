@@ -9,6 +9,7 @@ import os
 import platform
 import subprocess
 import threading
+import json
 from datetime import datetime
 from collections import OrderedDict
 
@@ -20,9 +21,32 @@ from tkinter import ttk, filedialog, messagebox, StringVar
 from PIL import Image, ImageTk
 
 
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".liqun_canvas_order_tool.json")
+
+
+def load_config():
+    """读取本机配置，只保存上次选择的库存表路径等轻量信息。"""
+    if not os.path.exists(CONFIG_PATH):
+        return {}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def save_config(config):
+    """保存本机配置。"""
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
 def extract_size(spec_name):
     """从规格名称中提取尺寸，如 '2米*3米'，提取不到则返回 '定制'"""
-    match = re.search(r'(\d+(?:\.\d+)?)\s*米?\s*\*\s*(\d+(?:\.\d+)?)\s*米', spec_name)
+    match = re.search(r'(\d+(?:\.\d+)?)\s*米?\s*\*\s*(\d+(?:\.\d+)?)\s*米?', str(spec_name))
     if match:
         w = float(match.group(1))
         h = float(match.group(2))
@@ -30,6 +54,16 @@ def extract_size(spec_name):
         h_str = f"{int(h)}米" if h == int(h) else f"{h}米"
         return f"{w_str}*{h_str}"
     return "定制"
+
+
+def to_number(value):
+    """把 Excel 中的数量转成数字，无法识别时返回0"""
+    if value is None or value == '':
+        return 0
+    if isinstance(value, (int, float)):
+        return value
+    match = re.search(r'-?\d+(?:\.\d+)?', str(value))
+    return float(match.group(0)) if match else 0
 
 
 def parse_size_area(size_str):
@@ -52,8 +86,102 @@ def size_sort_key(size_str):
     return (9999, 9999)
 
 
-def process_orders(input_path, output_dir):
+def load_inventory(inventory_path):
+    """读取库存表，返回库存信息。库存表可包含：尺寸/规格/规格名称 + 库存数量/库存/数量。"""
+    if not inventory_path:
+        return {}, [], None, None, []
+
+    wb = openpyxl.load_workbook(inventory_path, data_only=True)
+    ws = wb.active
+    header_row = [str(cell.value).strip() if cell.value else '' for cell in ws[1]]
+
+    size_col = None
+    qty_col = None
+    for idx, name in enumerate(header_row):
+        if name in ('尺寸', '规格尺寸', '规格', '规格名称', '商品规格'):
+            size_col = idx
+        elif name in ('库存数量', '库存', '现有库存', '可用库存', '数量', '库存件数'):
+            qty_col = idx
+
+    if size_col is None or qty_col is None:
+        raise ValueError(
+            "库存表表头中需要包含尺寸列和库存数量列。\n"
+            "尺寸列可命名为：尺寸、规格尺寸、规格、规格名称、商品规格\n"
+            "库存列可命名为：库存数量、库存、现有库存、可用库存、数量、库存件数\n"
+            f"当前表头：{header_row}"
+        )
+
+    inventory = {}
+    inventory_rows = []
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, values_only=True):
+        raw_size = row[size_col] if size_col < len(row) else ''
+        raw_qty = row[qty_col] if qty_col < len(row) else 0
+        if not raw_size:
+            continue
+
+        size = extract_size(raw_size)
+        if size == "定制":
+            size = str(raw_size).strip()
+        qty = to_number(raw_qty)
+        inventory[size] = inventory.get(size, 0) + qty
+        inventory_rows.append((list(row), size, qty))
+
+    return inventory, inventory_rows, size_col, qty_col, header_row
+
+
+def unique_output_path(output_dir, base_name):
+    """生成不冲突的 xlsx 输出路径。"""
+    output_path = os.path.join(output_dir, f"{base_name}.xlsx")
+    counter = 2
+    while os.path.exists(output_path):
+        output_path = os.path.join(output_dir, f"{base_name}_{counter}.xlsx")
+        counter += 1
+    return output_path
+
+
+def create_inventory_template(output_dir):
+    """生成库存表模板。"""
+    today = datetime.now().strftime("%Y%m%d")
+    output_path = unique_output_path(output_dir, f"库存模板_{today}")
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "库存模板"
+
+    header_font = Font(bold=True, size=11)
+    thin_border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+    headers = ['尺寸', '库存数量', '仓位', '备注']
+    examples = [
+        ['2米*3米', 0, '', '尺寸也可写 2*3'],
+        ['4米*4米', 0, '', '库存数量填现有张数'],
+    ]
+
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col, value=h)
+        c.font = header_font
+        c.alignment = Alignment(horizontal='center')
+        c.border = thin_border
+
+    for row_idx, row_values in enumerate(examples, 2):
+        for col, val in enumerate(row_values, 1):
+            c = ws.cell(row=row_idx, column=col, value=val)
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+
+    ws.column_dimensions['A'].width = 16
+    ws.column_dimensions['B'].width = 12
+    ws.column_dimensions['C'].width = 12
+    ws.column_dimensions['D'].width = 28
+    ws.freeze_panes = "A2"
+    wb.save(output_path)
+    return output_path
+
+
+def process_orders(input_path, output_dir, inventory_path=None):
     """处理订单数据"""
+    inventory, inventory_rows, inventory_size_col, inventory_qty_col, inventory_headers = load_inventory(inventory_path)
     wb = openpyxl.load_workbook(input_path)
     ws = wb.active
 
@@ -162,7 +290,10 @@ def process_orders(input_path, output_dir):
     )
 
     # 表头
-    headers = ['序号', '订单号', '规格名称', '规格编码', '数量', '快递单号', '备注', '', '尺寸', '总数量', '总平方数']
+    headers = [
+        '序号', '订单号', '规格名称', '规格编码', '数量', '快递单号', '备注', '',
+        '尺寸', '订单数量', '库存数量', '需加工数量', '剩余库存', '需加工平方数'
+    ]
     for col, h in enumerate(headers, 1):
         cell = out_ws.cell(row=1, column=col, value=h)
         cell.font = header_font
@@ -174,8 +305,11 @@ def process_orders(input_path, output_dir):
     seq = 1
     total_qty = 0
     total_area = 0.0
+    total_need_qty = 0
+    total_need_area = 0.0
     summary_data_small = []
     summary_data_large = []
+    abnormal_orders = [order for order in orders if order['size'] == "定制"]
 
     def write_section_title(ws, row, title, fill):
         """写分区标题行"""
@@ -294,72 +428,241 @@ def process_orders(input_path, output_dir):
     c5.font = Font(bold=True, size=12)
     c5.alignment = Alignment(horizontal='center')
 
-    # 右侧汇总表（I-K列）—— 分两段
+    def stock_plan(size, qty):
+        if size == "定制":
+            return 0, 0, 0, 0
+        stock_qty = inventory.get(size, 0)
+        need_qty = max(qty - stock_qty, 0)
+        remain_qty = max(stock_qty - qty, 0)
+        need_area = need_qty * parse_size_area(size)
+        return stock_qty, need_qty, remain_qty, need_area
+
+    def write_summary_header(row, title, fill):
+        labels = [title, "订单数量", "库存数量", "需加工数量", "剩余库存", "需加工平方数"]
+        for col_idx, val in enumerate(labels, 9):
+            c = out_ws.cell(row=row, column=col_idx, value=val)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = fill
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+        return row + 1
+
+    def write_summary_rows(row, summary_data, total_label, total_fill):
+        block_qty = 0
+        block_stock = 0
+        block_need = 0
+        block_remain = 0
+        block_need_area = 0.0
+
+        for size, qty, _area in summary_data:
+            stock_qty, need_qty, remain_qty, need_area = stock_plan(size, qty)
+            if need_qty > 0:
+                production_items.append((size, need_qty, need_area))
+            values = [size, qty, stock_qty, need_qty, remain_qty, round(need_area, 2)]
+            for col_idx, val in enumerate(values, 9):
+                c = out_ws.cell(row=row, column=col_idx, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+                if need_qty > 0:
+                    c.fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
+            block_qty += qty
+            block_stock += stock_qty
+            block_need += need_qty
+            block_remain += remain_qty
+            block_need_area += need_area
+            row += 1
+
+        values = [total_label, block_qty, block_stock, block_need, block_remain, round(block_need_area, 2)]
+        for col_idx, val in enumerate(values, 9):
+            c = out_ws.cell(row=row, column=col_idx, value=val)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = total_fill
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+
+        return row + 2, block_need, block_need_area
+
+    # 右侧汇总表（I-N列）—— 分两段，含库存和加工计划
+    production_items = []
     summary_row = 2
 
     # 小件汇总
     if summary_data_small:
-        c_title = out_ws.cell(row=summary_row, column=9, value="≤10m²")
-        c_title.font = Font(bold=True, color="FFFFFF")
-        c_title.fill = section_fill_small
-        c_title.alignment = Alignment(horizontal='center')
-        c_title.border = thin_border
-        for ci in (10, 11):
-            out_ws.cell(row=summary_row, column=ci).fill = section_fill_small
-            out_ws.cell(row=summary_row, column=ci).border = thin_border
-        summary_row += 1
-
-        for size, qty, area in summary_data_small:
-            for col_idx, val in [(9, size), (10, qty), (11, round(area, 2))]:
-                c = out_ws.cell(row=summary_row, column=col_idx, value=val)
-                c.border = thin_border
-                c.alignment = Alignment(horizontal='center')
-            summary_row += 1
-
-        # 小件小计
-        for col_idx, val in [(9, "小计"), (10, block_small_qty), (11, round(block_small_area, 2))]:
-            c = out_ws.cell(row=summary_row, column=col_idx, value=val)
-            c.font = Font(bold=True)
-            c.fill = block_total_fill_small
-            c.font = Font(bold=True, color="FFFFFF")
-            c.border = thin_border
-            c.alignment = Alignment(horizontal='center')
-        summary_row += 2  # 空行分隔
+        summary_row = write_summary_header(summary_row, "≤10m²", section_fill_small)
+        summary_row, need_qty, need_area = write_summary_rows(
+            summary_row, summary_data_small, "小计", block_total_fill_small
+        )
+        total_need_qty += need_qty
+        total_need_area += need_area
 
     # 大件汇总
     if summary_data_large:
-        c_title = out_ws.cell(row=summary_row, column=9, value=">10m²")
-        c_title.font = Font(bold=True, color="FFFFFF")
-        c_title.fill = section_fill_large
-        c_title.alignment = Alignment(horizontal='center')
-        c_title.border = thin_border
-        for ci in (10, 11):
-            out_ws.cell(row=summary_row, column=ci).fill = section_fill_large
-            out_ws.cell(row=summary_row, column=ci).border = thin_border
-        summary_row += 1
-
-        for size, qty, area in summary_data_large:
-            for col_idx, val in [(9, size), (10, qty), (11, round(area, 2))]:
-                c = out_ws.cell(row=summary_row, column=col_idx, value=val)
-                c.border = thin_border
-                c.alignment = Alignment(horizontal='center')
-            summary_row += 1
-
-        # 大件小计
-        for col_idx, val in [(9, "小计"), (10, block_large_qty), (11, round(block_large_area, 2))]:
-            c = out_ws.cell(row=summary_row, column=col_idx, value=val)
-            c.font = Font(bold=True, color="FFFFFF")
-            c.fill = block_total_fill_large
-            c.border = thin_border
-            c.alignment = Alignment(horizontal='center')
-        summary_row += 2
+        summary_row = write_summary_header(summary_row, ">10m²", section_fill_large)
+        summary_row, need_qty, need_area = write_summary_rows(
+            summary_row, summary_data_large, "小计", block_total_fill_large
+        )
+        total_need_qty += need_qty
+        total_need_area += need_area
 
     # 汇总总计行
-    for col_idx, val in [(9, "总计"), (10, total_qty), (11, round(total_area, 2))]:
+    total_stock = sum(inventory.get(size, 0) for size in sorted_sizes)
+    total_remain = sum(max(inventory.get(size, 0) - sum(o['qty'] for o in grouped[size]), 0) for size in sorted_sizes)
+    for col_idx, val in enumerate([
+        "总计", total_qty, total_stock, total_need_qty, total_remain, round(total_need_area, 2)
+    ], 9):
         c = out_ws.cell(row=summary_row, column=col_idx, value=val)
         c.font = Font(bold=True)
         c.border = thin_border
         c.alignment = Alignment(horizontal='center')
+
+    # 今日加工清单：只列出库存不够、需要加工的尺寸和数量
+    plan_ws = out_wb.create_sheet("今日加工清单")
+    plan_headers = ['序号', '尺寸', '需加工数量', '需加工平方数']
+    for col, h in enumerate(plan_headers, 1):
+        c = plan_ws.cell(row=1, column=col, value=h)
+        c.font = header_font
+        c.alignment = Alignment(horizontal='center')
+        c.border = thin_border
+
+    for idx, (size, need_qty, need_area) in enumerate(production_items, 1):
+        values = [idx, size, need_qty, round(need_area, 2)]
+        for col, val in enumerate(values, 1):
+            c = plan_ws.cell(row=idx + 1, column=col, value=val)
+            c.border = thin_border
+            c.alignment = Alignment(horizontal='center')
+            c.font = Font(size=13)
+
+    total_row = len(production_items) + 2
+    for col, val in enumerate(['总计', '', total_need_qty, round(total_need_area, 2)], 1):
+        c = plan_ws.cell(row=total_row, column=col, value=val)
+        c.font = Font(bold=True)
+        c.border = thin_border
+        c.alignment = Alignment(horizontal='center')
+
+    plan_ws.column_dimensions['A'].width = 8
+    plan_ws.column_dimensions['B'].width = 16
+    plan_ws.column_dimensions['C'].width = 14
+    plan_ws.column_dimensions['D'].width = 16
+    plan_ws.freeze_panes = "A2"
+    plan_ws.page_setup.orientation = "portrait"
+    plan_ws.page_setup.fitToWidth = 1
+    plan_ws.page_setup.fitToHeight = 0
+    plan_ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    # 库存余量：列出库存表里的全部尺寸，方便查看公司现有库存
+    if inventory:
+        stock_ws = out_wb.create_sheet("库存余量")
+        stock_headers = ['尺寸', '库存数量', '今日订单数量', '加工后剩余库存']
+        for col, h in enumerate(stock_headers, 1):
+            c = stock_ws.cell(row=1, column=col, value=h)
+            c.font = header_font
+            c.alignment = Alignment(horizontal='center')
+            c.border = thin_border
+
+        all_stock_sizes = sorted(inventory.keys(), key=size_sort_key)
+        for row_idx, size in enumerate(all_stock_sizes, 2):
+            order_qty = sum(o['qty'] for o in grouped.get(size, []))
+            remain_qty = max(inventory.get(size, 0) - order_qty, 0)
+            values = [size, inventory.get(size, 0), order_qty, remain_qty]
+            for col, val in enumerate(values, 1):
+                c = stock_ws.cell(row=row_idx, column=col, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+
+        stock_ws.column_dimensions['A'].width = 16
+        stock_ws.column_dimensions['B'].width = 14
+        stock_ws.column_dimensions['C'].width = 14
+        stock_ws.column_dimensions['D'].width = 16
+
+    if abnormal_orders:
+        abnormal_ws = out_wb.create_sheet("异常订单")
+        abnormal_headers = ['序号', '订单号', '规格名称', '规格编码', '数量', '快递单号', '备注']
+        warning_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+        for col, h in enumerate(abnormal_headers, 1):
+            c = abnormal_ws.cell(row=1, column=col, value=h)
+            c.font = header_font
+            c.fill = warning_fill
+            c.alignment = Alignment(horizontal='center')
+            c.border = thin_border
+
+        for idx, order in enumerate(abnormal_orders, 1):
+            values = [
+                idx, order['order_no'], order['spec_name'], order['spec_code'],
+                order['qty'], order['tracking_no'], order['remark']
+            ]
+            for col, val in enumerate(values, 1):
+                c = abnormal_ws.cell(row=idx + 1, column=col, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+
+        abnormal_ws.column_dimensions['A'].width = 8
+        abnormal_ws.column_dimensions['B'].width = 28
+        abnormal_ws.column_dimensions['C'].width = 55
+        abnormal_ws.column_dimensions['D'].width = 12
+        abnormal_ws.column_dimensions['E'].width = 8
+        abnormal_ws.column_dimensions['F'].width = 22
+        abnormal_ws.column_dimensions['G'].width = 35
+        abnormal_ws.freeze_panes = "A2"
+
+    updated_inventory_path = None
+    if inventory_path:
+        today = datetime.now().strftime("%Y%m%d")
+        updated_inventory_path = unique_output_path(output_dir, f"库存扣减后_{today}")
+        updated_wb = openpyxl.Workbook()
+        updated_ws = updated_wb.active
+        updated_ws.title = "库存扣减后"
+
+        updated_headers = list(inventory_headers)
+        updated_headers.extend(['今日订单数量', '加工后剩余库存'])
+        for col, h in enumerate(updated_headers, 1):
+            c = updated_ws.cell(row=1, column=col, value=h)
+            c.font = header_font
+            c.alignment = Alignment(horizontal='center')
+            c.border = thin_border
+
+        order_qty_by_size = {size: sum(o['qty'] for o in grouped.get(size, [])) for size in sorted_sizes}
+        used_sizes = set()
+        row_idx = 2
+        for row_values, size, stock_qty in inventory_rows:
+            values = list(row_values)
+            if len(values) < len(inventory_headers):
+                values.extend([''] * (len(inventory_headers) - len(values)))
+            order_qty = order_qty_by_size.get(size, 0)
+            remain_qty = max(stock_qty - order_qty, 0)
+            if inventory_qty_col is not None and inventory_qty_col < len(values):
+                values[inventory_qty_col] = remain_qty
+            values.extend([order_qty, remain_qty])
+            for col, val in enumerate(values, 1):
+                c = updated_ws.cell(row=row_idx, column=col, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+            used_sizes.add(size)
+            row_idx += 1
+
+        for size in sorted_sizes:
+            if size == "定制":
+                continue
+            if size in used_sizes:
+                continue
+            order_qty = order_qty_by_size.get(size, 0)
+            if order_qty <= 0:
+                continue
+            values = [''] * len(inventory_headers)
+            if inventory_size_col is not None and inventory_size_col < len(values):
+                values[inventory_size_col] = size
+            if inventory_qty_col is not None and inventory_qty_col < len(values):
+                values[inventory_qty_col] = 0
+            values.extend([order_qty, 0])
+            for col, val in enumerate(values, 1):
+                c = updated_ws.cell(row=row_idx, column=col, value=val)
+                c.border = thin_border
+                c.alignment = Alignment(horizontal='center')
+            row_idx += 1
+
+        for col in range(1, len(updated_headers) + 1):
+            updated_ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 16
+
+        updated_wb.save(updated_inventory_path)
 
     # 列宽
     out_ws.column_dimensions['A'].width = 16
@@ -373,23 +676,19 @@ def process_orders(input_path, output_dir):
     out_ws.column_dimensions['I'].width = 14
     out_ws.column_dimensions['J'].width = 10
     out_ws.column_dimensions['K'].width = 12
+    out_ws.column_dimensions['L'].width = 12
+    out_ws.column_dimensions['M'].width = 12
+    out_ws.column_dimensions['N'].width = 14
 
     today = datetime.now().strftime("%Y%m%d")
     base_name = f"帆布订单明细_{today}"
-    output_path = os.path.join(output_dir, f"{base_name}.xlsx")
-
-    # 如果文件被占用（Excel打开中），自动加编号避免冲突
-    counter = 2
-    while os.path.exists(output_path):
-        try:
-            with open(output_path, 'a'):
-                break  # 文件没被占用，可以覆盖
-        except PermissionError:
-            output_path = os.path.join(output_dir, f"{base_name}_{counter}.xlsx")
-            counter += 1
+    output_path = unique_output_path(output_dir, base_name)
 
     out_wb.save(output_path)
-    return output_path, len(orders), total_qty, len(sorted_sizes), round(total_area, 2)
+    return (
+        output_path, len(orders), total_qty, len(sorted_sizes), round(total_area, 2),
+        total_need_qty, round(total_need_area, 2), updated_inventory_path, len(abnormal_orders)
+    )
 
 
 def open_folder(path):
@@ -434,14 +733,20 @@ class OrderApp:
         except Exception:
             pass
 
-        w, h = 600, 580
+        w, h = 600, 660
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
 
         self.input_path = StringVar()
+        self.inventory_path = StringVar()
         self.output_dir = StringVar()
         self.output_path = None
+        self.updated_inventory_path = None
+        self.config = load_config()
+        last_inventory_path = self.config.get("last_inventory_path", "")
+        if last_inventory_path and os.path.exists(last_inventory_path):
+            self.inventory_path.set(last_inventory_path)
 
         self._setup_styles()
         self._build_ui()
@@ -517,6 +822,20 @@ class OrderApp:
         ttk.Button(file_row, text="选择文件", style="Primary.TButton",
                    command=self._select_file, width=10).pack(side="right")
 
+        # 库存文件卡片（可选）
+        inventory_card = self._make_card(self.root, "库存数据文件（可选）", pady=(0, 10))
+        inventory_row = tk.Frame(inventory_card, bg=self.CARD_BG)
+        inventory_row.pack(fill="x")
+        self.inventory_entry = ttk.Entry(inventory_row, textvariable=self.inventory_path,
+                                         state="readonly", style="Path.TEntry")
+        self.inventory_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        ttk.Button(inventory_row, text="选择库存", style="Primary.TButton",
+                   command=self._select_inventory_file, width=10).pack(side="right")
+        ttk.Button(inventory_row, text="清空", style="Info.TButton",
+                   command=self._clear_inventory_file, width=7).pack(side="right", padx=(0, 6))
+        ttk.Button(inventory_row, text="库存模板", style="Info.TButton",
+                   command=self._create_inventory_template, width=9).pack(side="right", padx=(0, 6))
+
         # 保存位置卡片
         save_card = self._make_card(self.root, "保存位置", pady=(0, 10))
         save_row = tk.Frame(save_card, bg=self.CARD_BG)
@@ -557,6 +876,30 @@ class OrderApp:
             if not self.output_dir.get():
                 self.output_dir.set(os.path.dirname(path))
 
+    def _select_inventory_file(self):
+        path = filedialog.askopenfilename(
+            title="选择库存数据文件",
+            filetypes=[("Excel文件", "*.xlsx *.xls"), ("所有文件", "*.*")],
+        )
+        if path:
+            self.inventory_path.set(path)
+            self.config["last_inventory_path"] = path
+            save_config(self.config)
+
+    def _clear_inventory_file(self):
+        self.inventory_path.set("")
+        self.config["last_inventory_path"] = ""
+        save_config(self.config)
+
+    def _create_inventory_template(self):
+        output_dir = self.output_dir.get() or os.path.expanduser("~/Desktop")
+        try:
+            template_path = create_inventory_template(output_dir)
+            messagebox.showinfo("完成", f"库存模板已生成：\n{template_path}")
+            open_folder(output_dir)
+        except Exception as e:
+            messagebox.showerror("失败", f"生成库存模板失败：\n{e}")
+
     def _select_output_dir(self):
         initial = self.output_dir.get() or os.path.expanduser("~")
         path = filedialog.askdirectory(title="选择保存文件夹", initialdir=initial)
@@ -581,21 +924,31 @@ class OrderApp:
 
     def _do_process(self):
         try:
-            result = process_orders(self.input_path.get(), self.output_dir.get())
+            inventory_path = self.inventory_path.get() or None
+            result = process_orders(self.input_path.get(), self.output_dir.get(), inventory_path)
             self.output_path = result[0]
+            self.updated_inventory_path = result[7]
             self.root.after(0, self._on_success, result)
         except Exception as e:
             self.root.after(0, self._on_error, str(e))
 
     def _on_success(self, result):
-        output_path, order_count, total_qty, size_count, total_area = result
+        (
+            output_path, order_count, total_qty, size_count, total_area,
+            need_qty, need_area, updated_inventory_path, abnormal_count
+        ) = result
+        inventory_text = f"\n已生成扣减后库存：{updated_inventory_path}" if updated_inventory_path else ""
+        abnormal_text = f"\n异常尺寸：{abnormal_count} 条（请看异常订单表）" if abnormal_count else ""
         self.progress.stop()
         self.result_label.config(
             text=(
                 f"处理完成！\n"
                 f"共 {order_count} 条订单    |    共 {size_count} 种尺寸\n"
                 f"总数量：{total_qty}    |    总平方数：{total_area} m\u00b2\n"
+                f"需加工数量：{need_qty}    |    需加工平方数：{need_area} m\u00b2\n"
                 f"已保存到：{output_path}"
+                f"{inventory_text}"
+                f"{abnormal_text}"
             ),
         )
         self.result_label.configure(foreground=self.SUCCESS)
