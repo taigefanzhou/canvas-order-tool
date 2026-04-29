@@ -10,6 +10,7 @@ import platform
 import subprocess
 import threading
 import json
+import tempfile
 from datetime import datetime
 from collections import OrderedDict
 
@@ -17,7 +18,7 @@ import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, StringVar
+from tkinter import ttk, filedialog, messagebox, BooleanVar, StringVar
 from PIL import Image, ImageTk
 
 
@@ -117,7 +118,133 @@ def unique_output_path(output_dir, base_name):
     return output_path
 
 
-def process_orders(input_path, output_dir, inventory_data=None):
+def get_printers():
+    """读取系统打印机列表，失败时只返回默认打印机。"""
+    printers = ["默认打印机"]
+    system = platform.system()
+    try:
+        if system == "Windows":
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-Printer | Select-Object -ExpandProperty Name"
+            ]
+            output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+            printers.extend([line.strip() for line in output.splitlines() if line.strip()])
+        else:
+            output = subprocess.check_output(["lpstat", "-a"], text=True, stderr=subprocess.DEVNULL)
+            printers.extend([line.split()[0] for line in output.splitlines() if line.strip()])
+    except Exception:
+        pass
+    return list(dict.fromkeys(printers))
+
+
+def print_production_items(production_items, printer_name=None):
+    """打印今日加工清单。生成专用打印文件，只打印输出结果部分。"""
+    if not production_items:
+        raise ValueError("没有需要打印的加工清单")
+
+    path = create_print_workbook(production_items)
+    system = platform.system()
+    selected = printer_name if printer_name and printer_name != "默认打印机" else None
+
+    if system == "Windows":
+        if selected:
+            subprocess.Popen([
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                (
+                    f"$excel = New-Object -ComObject Excel.Application; "
+                    f"$excel.Visible = $false; "
+                    f"$wb = $excel.Workbooks.Open('{path}'); "
+                    f"$wb.Worksheets.Item(1).PrintOut($null,$null,1,$false,'{selected}'); "
+                    f"$wb.Close($false); "
+                    f"$excel.Quit()"
+                )
+            ])
+        else:
+            os.startfile(path, "print")
+    else:
+        cmd = ["lpr"]
+        if selected:
+            cmd.extend(["-P", selected])
+        cmd.append(path)
+        subprocess.Popen(cmd)
+
+
+def create_print_workbook(production_items):
+    """创建只包含加工清单的打印专用 Excel，并设置打印区域。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "今日加工清单"
+
+    thin_border = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'), bottom=Side(style='thin')
+    )
+    title_fill = PatternFill(start_color="174766", end_color="174766", fill_type="solid")
+    header_fill = PatternFill(start_color="D9EAF7", end_color="D9EAF7", fill_type="solid")
+
+    ws.merge_cells("A1:D1")
+    title = ws["A1"]
+    title.value = "丽群帆布今日加工清单"
+    title.font = Font(bold=True, size=18, color="FFFFFF")
+    title.fill = title_fill
+    title.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    headers = ["序号", "尺寸", "需加工数量", "需加工平方数"]
+    for col, h in enumerate(headers, 1):
+        c = ws.cell(row=2, column=col, value=h)
+        c.font = Font(bold=True, size=12)
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin_border
+
+    total_qty = 0
+    total_area = 0
+    for idx, (size, qty, area) in enumerate(production_items, 1):
+        values = [idx, size, qty, round(area, 2)]
+        for col, val in enumerate(values, 1):
+            c = ws.cell(row=idx + 2, column=col, value=val)
+            c.font = Font(size=13)
+            c.alignment = Alignment(horizontal="center", vertical="center")
+            c.border = thin_border
+        total_qty += qty
+        total_area += area
+
+    total_row = len(production_items) + 3
+    total_values = ["总计", "", total_qty, round(total_area, 2)]
+    for col, val in enumerate(total_values, 1):
+        c = ws.cell(row=total_row, column=col, value=val)
+        c.font = Font(bold=True, size=13)
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = thin_border
+
+    ws.column_dimensions["A"].width = 8
+    ws.column_dimensions["B"].width = 18
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 16
+    ws.print_area = f"A1:D{total_row}"
+    ws.page_setup.orientation = "portrait"
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 1
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins.left = 0.3
+    ws.page_margins.right = 0.3
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
+    ws.freeze_panes = "A3"
+
+    path = os.path.join(tempfile.gettempdir(), "丽群今日加工清单_打印.xlsx")
+    wb.save(path)
+    return path
+
+
+def process_orders(input_path, output_dir, inventory_data=None, generate_excel=True):
     """处理订单数据"""
     inventory = normalize_inventory(inventory_data)
     wb = openpyxl.load_workbook(input_path)
@@ -560,12 +687,13 @@ def process_orders(input_path, output_dir, inventory_data=None):
 
     today = datetime.now().strftime("%Y%m%d")
     base_name = f"帆布订单明细_{today}"
-    output_path = unique_output_path(output_dir, base_name)
+    output_path = unique_output_path(output_dir, base_name) if generate_excel else None
 
-    out_wb.save(output_path)
+    if generate_excel:
+        out_wb.save(output_path)
     return (
         output_path, len(orders), total_qty, len(sorted_sizes), round(total_area, 2),
-        total_need_qty, round(total_need_area, 2), len(abnormal_orders)
+        total_need_qty, round(total_need_area, 2), len(abnormal_orders), production_items
     )
 
 
@@ -589,14 +717,15 @@ def resource_path(filename):
 
 class OrderApp:
     # 配色方案
-    BG = "#f0f4f8"
+    BG = "#edf1f5"
     CARD_BG = "#ffffff"
-    PRIMARY = "#4a90d9"
-    SUCCESS = "#28a745"
-    DANGER = "#dc3545"
-    TEXT = "#333333"
-    TEXT_LIGHT = "#888888"
-    BORDER = "#d0d7de"
+    PRIMARY = "#276f9f"
+    PRIMARY_DARK = "#174766"
+    SUCCESS = "#249447"
+    DANGER = "#c7362f"
+    TEXT = "#263238"
+    TEXT_LIGHT = "#6b7785"
+    BORDER = "#cbd5df"
 
     def __init__(self):
         self.root = tk.Tk()
@@ -611,7 +740,7 @@ class OrderApp:
         except Exception:
             pass
 
-        w, h = 600, 660
+        w, h = 760, 840
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
@@ -619,7 +748,10 @@ class OrderApp:
         self.input_path = StringVar()
         self.output_dir = StringVar()
         self.inventory_status = StringVar()
+        self.printer_name = StringVar(value="默认打印机")
+        self.generate_excel = BooleanVar(value=True)
         self.output_path = None
+        self.production_items = []
         self.config = load_config()
         self.config.setdefault("inventory", {})
         self._refresh_inventory_status()
@@ -633,16 +765,22 @@ class OrderApp:
         style.theme_use("clam")
 
         style.configure("Title.TLabel", background=self.BG, foreground=self.PRIMARY,
-                        font=("Microsoft YaHei", 18, "bold"))
+                        font=("Microsoft YaHei", 20, "bold"))
+        style.configure("HeroTitle.TLabel", background=self.PRIMARY_DARK, foreground="white",
+                        font=("Microsoft YaHei", 19, "bold"))
+        style.configure("HeroSub.TLabel", background=self.PRIMARY_DARK, foreground="#d8edf8",
+                        font=("Microsoft YaHei", 10))
         style.configure("Card.TFrame", background=self.CARD_BG)
         style.configure("CardTitle.TLabel", background=self.CARD_BG, foreground=self.TEXT,
-                        font=("Microsoft YaHei", 10, "bold"))
+                        font=("Microsoft YaHei", 11, "bold"))
         style.configure("Path.TEntry", font=("Microsoft YaHei", 9))
+        style.configure("Clean.TCheckbutton", background=self.CARD_BG, foreground=self.TEXT,
+                        font=("Microsoft YaHei", 10))
 
         style.configure("Primary.TButton", font=("Microsoft YaHei", 9),
                         background=self.PRIMARY, foreground="white")
         style.map("Primary.TButton",
-                  background=[("active", "#3a7bc8"), ("disabled", "#a0b4c8")])
+                  background=[("active", "#1f5c86"), ("disabled", "#a0b4c8")])
 
         style.configure("Success.TButton", font=("Microsoft YaHei", 11, "bold"),
                         background=self.SUCCESS, foreground="white", padding=(20, 10))
@@ -662,31 +800,37 @@ class OrderApp:
 
     def _make_card(self, parent, title_text, pady=(0, 8)):
         outer = tk.Frame(parent, bg=self.BG)
-        outer.pack(fill="x", padx=24, pady=pady)
+        outer.pack(fill="x", padx=28, pady=pady)
 
         title = ttk.Label(outer, text=title_text, style="CardTitle.TLabel")
         title.configure(background=self.BG)
         title.pack(anchor="w", pady=(0, 4))
 
         card = tk.Frame(outer, bg=self.CARD_BG, highlightbackground=self.BORDER,
-                        highlightthickness=1, padx=12, pady=10)
+                        highlightthickness=1, padx=14, pady=11)
         card.pack(fill="x")
         return card
 
     def _build_ui(self):
         # 顶部标题区域：logo + 文字
-        header = tk.Frame(self.root, bg=self.BG)
-        header.pack(pady=(16, 10))
+        header = tk.Frame(self.root, bg=self.PRIMARY_DARK)
+        header.pack(fill="x")
+
+        header_inner = tk.Frame(header, bg=self.PRIMARY_DARK)
+        header_inner.pack(fill="x", padx=28, pady=18)
 
         try:
             logo_img = Image.open(resource_path("logo.png"))
-            logo_img = logo_img.resize((48, 48), Image.LANCZOS)
+            logo_img = logo_img.resize((52, 52), Image.LANCZOS)
             self._logo_photo = ImageTk.PhotoImage(logo_img)
-            tk.Label(header, image=self._logo_photo, bg=self.BG).pack(side="left", padx=(0, 10))
+            tk.Label(header_inner, image=self._logo_photo, bg=self.PRIMARY_DARK).pack(side="left", padx=(0, 12))
         except Exception:
             pass
 
-        ttk.Label(header, text="丽群帆布纺织电商统计系统", style="Title.TLabel").pack(side="left")
+        title_box = tk.Frame(header_inner, bg=self.PRIMARY_DARK)
+        title_box.pack(side="left", fill="x", expand=True)
+        ttk.Label(title_box, text="丽群帆布纺织电商统计系统", style="HeroTitle.TLabel").pack(anchor="w")
+        ttk.Label(title_box, text="订单整理 · 库存核算 · 加工清单 · 打印", style="HeroSub.TLabel").pack(anchor="w", pady=(3, 0))
 
         # 选择文件卡片
         file_card = self._make_card(self.root, "原始数据文件", pady=(0, 10))
@@ -718,10 +862,21 @@ class OrderApp:
         ttk.Button(save_row, text="选择文件夹", style="Primary.TButton",
                    command=self._select_output_dir, width=10).pack(side="right")
 
+        excel_row = tk.Frame(save_card, bg=self.CARD_BG)
+        excel_row.pack(fill="x", pady=(8, 0))
+        ttk.Checkbutton(
+            excel_row,
+            text="生成Excel文件到保存位置",
+            variable=self.generate_excel,
+            style="Clean.TCheckbutton"
+        ).pack(side="left")
+
         # 开始处理按钮
-        self.process_btn = ttk.Button(self.root, text="开始处理", style="Success.TButton",
-                                      command=self._start_process, width=18)
-        self.process_btn.pack(pady=(8, 5))
+        action_row = tk.Frame(self.root, bg=self.BG)
+        action_row.pack(fill="x", padx=28, pady=(8, 5))
+        self.process_btn = ttk.Button(action_row, text="开始处理", style="Success.TButton",
+                                      command=self._start_process, width=20)
+        self.process_btn.pack(fill="x")
 
         # 进度条
         self.progress = ttk.Progressbar(self.root, mode="indeterminate",
@@ -733,10 +888,41 @@ class OrderApp:
         self.result_label = ttk.Label(result_card, text="等待处理...", style="Result.TLabel")
         self.result_label.pack(fill="x")
 
-        # 打开文件夹按钮
-        self.open_btn = ttk.Button(self.root, text="打开文件夹", style="Info.TButton",
-                                   command=self._open_output_folder, width=14, state="disabled")
-        self.open_btn.pack(pady=(0, 15))
+        # 输出结果预览
+        output_card = self._make_card(self.root, "输出结果", pady=(0, 10))
+        self.output_tree = ttk.Treeview(
+            output_card,
+            columns=("size", "qty", "area"),
+            show="headings",
+            height=7
+        )
+        self.output_tree.heading("size", text="尺寸")
+        self.output_tree.heading("qty", text="需加工数量")
+        self.output_tree.heading("area", text="需加工平方数")
+        self.output_tree.column("size", width=160, anchor="center")
+        self.output_tree.column("qty", width=120, anchor="center")
+        self.output_tree.column("area", width=130, anchor="center")
+        self.output_tree.pack(fill="x")
+
+        print_row = tk.Frame(output_card, bg=self.CARD_BG)
+        print_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(print_row, text="打印机", style="CardTitle.TLabel").pack(side="left", padx=(0, 8))
+        self.printer_combo = ttk.Combobox(
+            print_row,
+            textvariable=self.printer_name,
+            values=get_printers(),
+            state="readonly",
+            width=24
+        )
+        self.printer_combo.pack(side="left")
+        ttk.Button(print_row, text="刷新打印机", style="Info.TButton",
+                   command=self._refresh_printers, width=10).pack(side="left", padx=(8, 0))
+        self.print_btn = ttk.Button(print_row, text="打印加工清单", style="Primary.TButton",
+                                    command=self._print_output, width=14, state="disabled")
+        self.print_btn.pack(side="right")
+        self.open_btn = ttk.Button(print_row, text="打开文件夹", style="Info.TButton",
+                                   command=self._open_output_folder, width=10, state="disabled")
+        self.open_btn.pack(side="right", padx=(0, 8))
 
     def _select_file(self):
         path = filedialog.askopenfilename(
@@ -859,12 +1045,15 @@ class OrderApp:
         if not self.input_path.get():
             messagebox.showwarning("提示", "请先选择原始数据文件")
             return
-        if not self.output_dir.get():
+        if self.generate_excel.get() and not self.output_dir.get():
             messagebox.showwarning("提示", "请先选择保存位置")
             return
 
         self.process_btn.config(state="disabled")
         self.open_btn.config(state="disabled")
+        self.print_btn.config(state="disabled")
+        self.production_items = []
+        self._populate_output_tree([])
         self.result_label.config(text="正在处理中...", foreground="gray")
         self.progress.start(15)
 
@@ -875,8 +1064,9 @@ class OrderApp:
         try:
             result = process_orders(
                 self.input_path.get(),
-                self.output_dir.get(),
-                self.config.get("inventory", {})
+                self.output_dir.get() or tempfile.gettempdir(),
+                self.config.get("inventory", {}),
+                self.generate_excel.get()
             )
             self.output_path = result[0]
             self.root.after(0, self._on_success, result)
@@ -886,9 +1076,12 @@ class OrderApp:
     def _on_success(self, result):
         (
             output_path, order_count, total_qty, size_count, total_area,
-            need_qty, need_area, abnormal_count
+            need_qty, need_area, abnormal_count, production_items
         ) = result
+        self.production_items = production_items
+        self._populate_output_tree(production_items)
         abnormal_text = f"\n异常尺寸：{abnormal_count} 条（请看异常订单表）" if abnormal_count else ""
+        output_text = f"已保存到：{output_path}" if output_path else "本次未生成Excel文件"
         self.progress.stop()
         self.result_label.config(
             text=(
@@ -896,19 +1089,38 @@ class OrderApp:
                 f"共 {order_count} 条订单    |    共 {size_count} 种尺寸\n"
                 f"总数量：{total_qty}    |    总平方数：{total_area} m\u00b2\n"
                 f"需加工数量：{need_qty}    |    需加工平方数：{need_area} m\u00b2\n"
-                f"已保存到：{output_path}"
+                f"{output_text}"
                 f"{abnormal_text}"
             ),
         )
         self.result_label.configure(foreground=self.SUCCESS)
         self.process_btn.config(state="normal")
-        self.open_btn.config(state="normal")
+        self.open_btn.config(state="normal" if output_path else "disabled")
+        self.print_btn.config(state="normal" if production_items else "disabled")
 
     def _on_error(self, msg):
         self.progress.stop()
         self.result_label.config(text=f"处理失败：\n{msg}")
         self.result_label.configure(foreground=self.DANGER)
         self.process_btn.config(state="normal")
+
+    def _populate_output_tree(self, production_items):
+        self.output_tree.delete(*self.output_tree.get_children())
+        for size, qty, area in production_items:
+            self.output_tree.insert("", "end", values=(size, f"{qty:g}", f"{round(area, 2):g}"))
+
+    def _refresh_printers(self):
+        printers = get_printers()
+        self.printer_combo.configure(values=printers)
+        if self.printer_name.get() not in printers:
+            self.printer_name.set("默认打印机")
+
+    def _print_output(self):
+        try:
+            print_production_items(self.production_items, self.printer_name.get())
+            messagebox.showinfo("完成", "加工清单已发送到打印机")
+        except Exception as e:
+            messagebox.showerror("打印失败", str(e))
 
     def _open_output_folder(self):
         if self.output_path:
