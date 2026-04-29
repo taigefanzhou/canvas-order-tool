@@ -22,7 +22,7 @@ from tkinter import ttk, filedialog, messagebox, BooleanVar, StringVar
 from PIL import Image, ImageTk
 
 
-APP_VERSION = "v1.8"
+APP_VERSION = "v1.9"
 APP_NAME = "丽群帆布纺织电商统计系统"
 APP_DISPLAY_NAME = f"{APP_NAME} {APP_VERSION}"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".liqun_canvas_order_tool.json")
@@ -121,6 +121,21 @@ def unique_output_path(output_dir, base_name):
     return output_path
 
 
+def hidden_subprocess_kwargs():
+    """Windows 图形程序调用命令行时隐藏黑色命令窗口。"""
+    if platform.system() != "Windows":
+        return {}
+
+    kwargs = {}
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "STARTUPINFO") and hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        kwargs["startupinfo"] = startupinfo
+    return kwargs
+
+
 def get_printers():
     """读取系统打印机列表，失败时只返回默认打印机。"""
     printers = ["默认打印机"]
@@ -133,7 +148,12 @@ def get_printers():
                 "-Command",
                 "Get-Printer | Select-Object -ExpandProperty Name"
             ]
-            output = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL)
+            output = subprocess.check_output(
+                cmd,
+                text=True,
+                stderr=subprocess.DEVNULL,
+                **hidden_subprocess_kwargs()
+            )
             printers.extend([line.strip() for line in output.splitlines() if line.strip()])
         else:
             output = subprocess.check_output(["lpstat", "-a"], text=True, stderr=subprocess.DEVNULL)
@@ -166,7 +186,7 @@ def print_production_items(production_items, printer_name=None):
                     f"$wb.Close($false); "
                     f"$excel.Quit()"
                 )
-            ])
+            ], **hidden_subprocess_kwargs())
         else:
             os.startfile(path, "print")
     else:
