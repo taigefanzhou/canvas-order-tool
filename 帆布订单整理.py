@@ -22,6 +22,9 @@ from tkinter import ttk, filedialog, messagebox, BooleanVar, StringVar
 from PIL import Image, ImageTk
 
 
+APP_VERSION = "v1.8"
+APP_NAME = "丽群帆布纺织电商统计系统"
+APP_DISPLAY_NAME = f"{APP_NAME} {APP_VERSION}"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".liqun_canvas_order_tool.json")
 SMALL_STOCK_SIZES = ['2米*2米', '2米*3米', '2米*4米', '2米*5米', '3米*3米']
 LARGE_STOCK_SIZES = [
@@ -729,7 +732,7 @@ class OrderApp:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("丽群帆布纺织电商统计系统")
+        self.root.title(APP_DISPLAY_NAME)
         self.root.configure(bg=self.BG)
         self.root.resizable(True, True)
 
@@ -834,7 +837,7 @@ class OrderApp:
 
         title_box = tk.Frame(header_inner, bg=self.PRIMARY_DARK)
         title_box.pack(side="left", fill="x", expand=True)
-        ttk.Label(title_box, text="丽群帆布纺织电商统计系统", style="HeroTitle.TLabel").pack(anchor="w")
+        ttk.Label(title_box, text=APP_DISPLAY_NAME, style="HeroTitle.TLabel").pack(anchor="w")
         ttk.Label(title_box, text="订单整理 · 库存核算 · 加工清单 · 打印", style="HeroSub.TLabel").pack(anchor="w", pady=(3, 0))
 
         main = tk.Frame(self.root, bg=self.BG)
