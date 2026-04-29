@@ -731,7 +731,7 @@ class OrderApp:
         self.root = tk.Tk()
         self.root.title("丽群帆布纺织电商统计系统")
         self.root.configure(bg=self.BG)
-        self.root.resizable(False, False)
+        self.root.resizable(True, True)
 
         # 设置窗口图标
         try:
@@ -740,21 +740,24 @@ class OrderApp:
         except Exception:
             pass
 
-        w, h = 760, 840
+        w, h = 1080, 720
         x = (self.root.winfo_screenwidth() - w) // 2
         y = (self.root.winfo_screenheight() - h) // 2
         self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.minsize(1020, 650)
 
         self.input_path = StringVar()
         self.output_dir = StringVar()
         self.inventory_status = StringVar()
         self.printer_name = StringVar(value="默认打印机")
         self.generate_excel = BooleanVar(value=True)
+        self.excel_status = StringVar()
         self.output_path = None
         self.production_items = []
         self.config = load_config()
         self.config.setdefault("inventory", {})
         self._refresh_inventory_status()
+        self._refresh_excel_status()
 
         self._setup_styles()
         self._build_ui()
@@ -793,14 +796,16 @@ class OrderApp:
                   background=[("active", "#138496"), ("disabled", "#a0c8d0")])
 
         style.configure("Result.TLabel", background=self.CARD_BG, foreground=self.TEXT_LIGHT,
-                        font=("Microsoft YaHei", 11), wraplength=520, justify="left")
+                        font=("Microsoft YaHei", 10), wraplength=360, justify="left")
+        style.configure("Hint.TLabel", background=self.CARD_BG, foreground=self.TEXT_LIGHT,
+                        font=("Microsoft YaHei", 9))
 
         style.configure("green.Horizontal.TProgressbar", troughcolor="#e0e0e0",
                         background=self.SUCCESS, thickness=8)
 
-    def _make_card(self, parent, title_text, pady=(0, 8)):
+    def _make_card(self, parent, title_text, pady=(0, 8), fill="x", expand=False):
         outer = tk.Frame(parent, bg=self.BG)
-        outer.pack(fill="x", padx=28, pady=pady)
+        outer.pack(fill=fill, expand=expand, pady=pady)
 
         title = ttk.Label(outer, text=title_text, style="CardTitle.TLabel")
         title.configure(background=self.BG)
@@ -808,7 +813,7 @@ class OrderApp:
 
         card = tk.Frame(outer, bg=self.CARD_BG, highlightbackground=self.BORDER,
                         highlightthickness=1, padx=14, pady=11)
-        card.pack(fill="x")
+        card.pack(fill="both" if expand else "x", expand=expand)
         return card
 
     def _build_ui(self):
@@ -832,8 +837,18 @@ class OrderApp:
         ttk.Label(title_box, text="丽群帆布纺织电商统计系统", style="HeroTitle.TLabel").pack(anchor="w")
         ttk.Label(title_box, text="订单整理 · 库存核算 · 加工清单 · 打印", style="HeroSub.TLabel").pack(anchor="w", pady=(3, 0))
 
+        main = tk.Frame(self.root, bg=self.BG)
+        main.pack(fill="both", expand=True, padx=24, pady=16)
+
+        left_col = tk.Frame(main, bg=self.BG, width=430)
+        left_col.pack(side="left", fill="y", padx=(0, 16))
+        left_col.pack_propagate(False)
+
+        right_col = tk.Frame(main, bg=self.BG)
+        right_col.pack(side="left", fill="both", expand=True)
+
         # 选择文件卡片
-        file_card = self._make_card(self.root, "原始数据文件", pady=(0, 10))
+        file_card = self._make_card(left_col, "原始数据文件", pady=(0, 10))
         file_row = tk.Frame(file_card, bg=self.CARD_BG)
         file_row.pack(fill="x")
         self.file_entry = ttk.Entry(file_row, textvariable=self.input_path,
@@ -843,7 +858,7 @@ class OrderApp:
                    command=self._select_file, width=10).pack(side="right")
 
         # 库存维护卡片
-        inventory_card = self._make_card(self.root, "库存数据", pady=(0, 10))
+        inventory_card = self._make_card(left_col, "库存数据", pady=(0, 10))
         inventory_row = tk.Frame(inventory_card, bg=self.CARD_BG)
         inventory_row.pack(fill="x")
         self.inventory_entry = ttk.Entry(inventory_row, textvariable=self.inventory_status,
@@ -853,7 +868,7 @@ class OrderApp:
                    command=self._open_inventory_editor, width=12).pack(side="right")
 
         # 保存位置卡片
-        save_card = self._make_card(self.root, "保存位置", pady=(0, 10))
+        save_card = self._make_card(left_col, "保存位置", pady=(0, 10))
         save_row = tk.Frame(save_card, bg=self.CARD_BG)
         save_row.pack(fill="x")
         self.save_entry = ttk.Entry(save_row, textvariable=self.output_dir,
@@ -868,61 +883,69 @@ class OrderApp:
             excel_row,
             text="生成Excel文件到保存位置",
             variable=self.generate_excel,
+            command=self._refresh_excel_status,
             style="Clean.TCheckbutton"
         ).pack(side="left")
+        ttk.Label(excel_row, textvariable=self.excel_status, style="Hint.TLabel").pack(side="left", padx=(10, 0))
 
         # 开始处理按钮
-        action_row = tk.Frame(self.root, bg=self.BG)
-        action_row.pack(fill="x", padx=28, pady=(8, 5))
+        action_row = tk.Frame(left_col, bg=self.BG)
+        action_row.pack(fill="x", pady=(8, 5))
         self.process_btn = ttk.Button(action_row, text="开始处理", style="Success.TButton",
                                       command=self._start_process, width=20)
         self.process_btn.pack(fill="x")
 
         # 进度条
-        self.progress = ttk.Progressbar(self.root, mode="indeterminate",
-                                        style="green.Horizontal.TProgressbar", length=540)
-        self.progress.pack(pady=(0, 8))
+        self.progress = ttk.Progressbar(left_col, mode="indeterminate",
+                                        style="green.Horizontal.TProgressbar")
+        self.progress.pack(fill="x", pady=(0, 8))
 
         # 结果卡片
-        result_card = self._make_card(self.root, "处理结果", pady=(0, 10))
+        result_card = self._make_card(left_col, "处理结果", pady=(0, 10))
         self.result_label = ttk.Label(result_card, text="等待处理...", style="Result.TLabel")
         self.result_label.pack(fill="x")
 
         # 输出结果预览
-        output_card = self._make_card(self.root, "输出结果", pady=(0, 10))
+        output_card = self._make_card(right_col, "输出结果", pady=(0, 0), fill="both", expand=True)
+        tree_frame = tk.Frame(output_card, bg=self.CARD_BG)
+        tree_frame.pack(fill="both", expand=True)
         self.output_tree = ttk.Treeview(
-            output_card,
+            tree_frame,
             columns=("size", "qty", "area"),
             show="headings",
-            height=7
+            height=18
         )
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.output_tree.yview)
+        self.output_tree.configure(yscrollcommand=tree_scroll.set)
         self.output_tree.heading("size", text="尺寸")
         self.output_tree.heading("qty", text="需加工数量")
         self.output_tree.heading("area", text="需加工平方数")
-        self.output_tree.column("size", width=160, anchor="center")
-        self.output_tree.column("qty", width=120, anchor="center")
-        self.output_tree.column("area", width=130, anchor="center")
-        self.output_tree.pack(fill="x")
+        self.output_tree.column("size", width=190, anchor="center")
+        self.output_tree.column("qty", width=140, anchor="center")
+        self.output_tree.column("area", width=150, anchor="center")
+        self.output_tree.pack(side="left", fill="both", expand=True)
+        tree_scroll.pack(side="right", fill="y")
 
         print_row = tk.Frame(output_card, bg=self.CARD_BG)
         print_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(print_row, text="打印机", style="CardTitle.TLabel").pack(side="left", padx=(0, 8))
+        ttk.Label(print_row, text="打印机", style="CardTitle.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.printer_combo = ttk.Combobox(
             print_row,
             textvariable=self.printer_name,
             values=get_printers(),
             state="readonly",
-            width=24
+            width=20
         )
-        self.printer_combo.pack(side="left")
+        self.printer_combo.grid(row=0, column=1, sticky="ew")
         ttk.Button(print_row, text="刷新打印机", style="Info.TButton",
-                   command=self._refresh_printers, width=10).pack(side="left", padx=(8, 0))
+                   command=self._refresh_printers, width=10).grid(row=0, column=2, padx=(8, 0))
         self.print_btn = ttk.Button(print_row, text="打印加工清单", style="Primary.TButton",
                                     command=self._print_output, width=14, state="disabled")
-        self.print_btn.pack(side="right")
+        self.print_btn.grid(row=1, column=2, sticky="e", pady=(8, 0))
         self.open_btn = ttk.Button(print_row, text="打开文件夹", style="Info.TButton",
                                    command=self._open_output_folder, width=10, state="disabled")
-        self.open_btn.pack(side="right", padx=(0, 8))
+        self.open_btn.grid(row=1, column=1, sticky="e", pady=(8, 0))
+        print_row.columnconfigure(1, weight=1)
 
     def _select_file(self):
         path = filedialog.askopenfilename(
@@ -933,6 +956,12 @@ class OrderApp:
             self.input_path.set(path)
             if not self.output_dir.get():
                 self.output_dir.set(os.path.dirname(path))
+
+    def _refresh_excel_status(self):
+        if self.generate_excel.get():
+            self.excel_status.set("已打勾，会生成Excel")
+        else:
+            self.excel_status.set("未打勾，只预览/打印")
 
     def _refresh_inventory_status(self):
         inventory = normalize_inventory(self.config.get("inventory", {}))
