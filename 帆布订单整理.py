@@ -22,16 +22,24 @@ from tkinter import ttk, filedialog, messagebox, BooleanVar, StringVar
 from PIL import Image, ImageTk
 
 
-APP_VERSION = "v1.9"
+APP_VERSION = "v1.10"
 APP_NAME = "丽群帆布纺织电商统计系统"
 APP_DISPLAY_NAME = f"{APP_NAME} {APP_VERSION}"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".liqun_canvas_order_tool.json")
-SMALL_STOCK_SIZES = ['2米*2米', '2米*3米', '2米*4米', '2米*5米', '3米*3米']
+SIZE_PATTERN = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(?:米|m|M)?\s*[\*xX×＊Ｘ✕]\s*(\d+(?:\.\d+)?)\s*(?:米|m|M)?'
+)
+NON_CANVAS_SPEC_KEYWORDS = ('差价', '补差', '补拍', '补款', '补收', '补运费', '运费', '邮费')
+SMALL_STOCK_SIZES = ['2米*1.5米', '2米*2米', '2米*3米', '2米*4米', '2米*5米', '3米*3米']
 LARGE_STOCK_SIZES = [
-    '2米*6米', '2米*10米', '3米*4米', '3米*5米', '3米*6米', '3米*10米',
-    '4米*4米', '4米*5米', '4米*6米', '4米*8米',
+    '2米*6米', '2米*7米', '2米*8米', '2米*10米',
+    '3米*4米', '3米*5米', '3米*6米', '3米*7米', '3米*8米', '3米*10米',
+    '4米*4米', '4米*5米', '4米*6米', '4米*7米', '4米*8米', '4米*10米',
     '5米*5米', '5米*6米', '5米*7米', '5米*8米', '5米*10米',
-    '6米*6米', '6米*8米', '6米*10米', '7米*8米', '10米*10米',
+    '6米*6米', '6米*7米', '6米*8米', '6米*10米',
+    '7米*7米', '7米*8米',
+    '8米*8米', '8米*10米',
+    '10米*10米', '10米*12米', '10米*15米', '10米*20米',
 ]
 ALL_STOCK_SIZES = SMALL_STOCK_SIZES + LARGE_STOCK_SIZES
 
@@ -56,16 +64,26 @@ def save_config(config):
         pass
 
 
+def format_size_number(value):
+    """把尺寸数字格式化为稳定展示，如 2.0 -> 2，1.5 -> 1.5。"""
+    num = float(value)
+    return str(int(num)) if num.is_integer() else f"{num:g}"
+
+
 def extract_size(spec_name):
-    """从规格名称中提取尺寸，如 '2米*3米'，提取不到则返回 '定制'"""
-    match = re.search(r'(\d+(?:\.\d+)?)\s*米?\s*\*\s*(\d+(?:\.\d+)?)\s*米?', str(spec_name))
+    """从规格名称中提取尺寸，如 2米*3米、2x3米、2×3米，提取不到则返回 定制。"""
+    match = SIZE_PATTERN.search(str(spec_name))
     if match:
-        w = float(match.group(1))
-        h = float(match.group(2))
-        w_str = f"{int(w)}米" if w == int(w) else f"{w}米"
-        h_str = f"{int(h)}米" if h == int(h) else f"{h}米"
-        return f"{w_str}*{h_str}"
+        w_str = format_size_number(match.group(1))
+        h_str = format_size_number(match.group(2))
+        return f"{w_str}米*{h_str}米"
     return "定制"
+
+
+def should_skip_spec(spec_name):
+    """跳过补差价、补运费等非帆布商品行，避免误跳过正常含“补”字的商品名。"""
+    spec = str(spec_name)
+    return any(keyword in spec for keyword in NON_CANVAS_SPEC_KEYWORDS)
 
 
 def to_number(value):
@@ -315,9 +333,9 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         if not order_no or not spec_name:
             continue
 
-        # 跳过非帆布商品（如补收差价等）
+        # 跳过非帆布商品（如补收差价、补运费等）
         spec_str = str(spec_name)
-        if '差价' in spec_str or '补' in spec_str:
+        if should_skip_spec(spec_str):
             continue
 
         size = extract_size(spec_str)
@@ -329,10 +347,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         if buyer_msg:
             remark_parts.append(str(buyer_msg))
         remark_text = ' | '.join(remark_parts)
-        try:
-            qty_val = int(qty) if qty else 0
-        except (ValueError, TypeError):
-            qty_val = 0
+        qty_val = int(to_number(qty))
 
         orders.append({
             'order_no': str(order_no),
@@ -397,6 +412,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
     total_need_area = 0.0
     summary_data_small = []
     summary_data_large = []
+    summary_items = []
     abnormal_orders = [order for order in orders if order['size'] == "定制"]
 
     def write_section_title(ws, row, title, fill):
@@ -535,7 +551,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
             c.alignment = Alignment(horizontal='center')
         return row + 1
 
-    def write_summary_rows(row, summary_data, total_label, total_fill):
+    def write_summary_rows(row, summary_data, total_label, total_fill, section_label):
         block_qty = 0
         block_stock = 0
         block_need = 0
@@ -546,6 +562,15 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
             stock_qty, need_qty, remain_qty, need_area = stock_plan(size, qty)
             if need_qty > 0:
                 production_items.append((size, need_qty, need_area))
+            summary_items.append({
+                "section": section_label,
+                "size": size,
+                "order_qty": qty,
+                "stock_qty": stock_qty,
+                "need_qty": need_qty,
+                "remain_qty": remain_qty,
+                "need_area": round(need_area, 2),
+            })
             values = [size, qty, stock_qty, need_qty, remain_qty, round(need_area, 2)]
             for col_idx, val in enumerate(values, 9):
                 c = out_ws.cell(row=row, column=col_idx, value=val)
@@ -578,7 +603,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
     if summary_data_small:
         summary_row = write_summary_header(summary_row, "≤10m²", section_fill_small)
         summary_row, need_qty, need_area = write_summary_rows(
-            summary_row, summary_data_small, "小计", block_total_fill_small
+            summary_row, summary_data_small, "小计", block_total_fill_small, "≤10平方米"
         )
         total_need_qty += need_qty
         total_need_area += need_area
@@ -587,7 +612,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
     if summary_data_large:
         summary_row = write_summary_header(summary_row, ">10m²", section_fill_large)
         summary_row, need_qty, need_area = write_summary_rows(
-            summary_row, summary_data_large, "小计", block_total_fill_large
+            summary_row, summary_data_large, "小计", block_total_fill_large, ">10平方米"
         )
         total_need_qty += need_qty
         total_need_area += need_area
@@ -716,12 +741,24 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         out_wb.save(output_path)
     return (
         output_path, len(orders), total_qty, len(sorted_sizes), round(total_area, 2),
-        total_need_qty, round(total_need_area, 2), len(abnormal_orders), production_items
+        total_need_qty, round(total_need_area, 2), len(abnormal_orders), production_items,
+        summary_items
     )
 
 
 def open_folder(path):
     """跨平台打开文件夹"""
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(path)
+    elif system == "Darwin":
+        subprocess.call(["open", path])
+    else:
+        subprocess.call(["xdg-open", path])
+
+
+def open_path(path):
+    """跨平台打开文件或文件夹。"""
     system = platform.system()
     if system == "Windows":
         os.startfile(path)
@@ -777,6 +814,10 @@ class OrderApp:
         self.excel_status = StringVar()
         self.output_path = None
         self.production_items = []
+        self.summary_items = []
+        self.current_order_sizes = []
+        self.metric_value_labels = {}
+        self.precheck_status = StringVar(value="选择文件后自动预检订单表")
         self.config = load_config()
         self.config.setdefault("inventory", {})
         self._refresh_inventory_status()
@@ -879,6 +920,9 @@ class OrderApp:
         self.file_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
         ttk.Button(file_row, text="选择文件", style="Primary.TButton",
                    command=self._select_file, width=10).pack(side="right")
+        ttk.Label(file_card, textvariable=self.precheck_status, style="Hint.TLabel").pack(
+            anchor="w", fill="x", pady=(8, 0)
+        )
 
         # 库存维护卡片
         inventory_card = self._make_card(left_col, "库存数据", pady=(0, 10))
@@ -925,8 +969,32 @@ class OrderApp:
 
         # 结果卡片
         result_card = self._make_card(left_col, "处理结果", pady=(0, 10))
+        metrics_grid = tk.Frame(result_card, bg=self.CARD_BG)
+        metrics_grid.pack(fill="x", pady=(0, 8))
+        metric_defs = [
+            ("订单行数", "order_count"),
+            ("商品总数量", "total_qty"),
+            ("需加工数量", "need_qty"),
+            ("需加工平方", "need_area"),
+            ("异常规格", "abnormal_count"),
+        ]
+        for idx, (label, key) in enumerate(metric_defs):
+            card = tk.Frame(metrics_grid, bg="#f7fafc", highlightbackground=self.BORDER,
+                            highlightthickness=1, padx=8, pady=6)
+            card.grid(row=idx // 2, column=idx % 2, sticky="ew", padx=(0, 6), pady=(0, 6))
+            tk.Label(card, text=label, bg="#f7fafc", fg=self.TEXT_LIGHT,
+                     font=("Microsoft YaHei", 8)).pack(anchor="w")
+            value_label = tk.Label(card, text="--", bg="#f7fafc", fg=self.TEXT,
+                                   font=("Microsoft YaHei", 13, "bold"))
+            value_label.pack(anchor="w")
+            self.metric_value_labels[key] = value_label
+        metrics_grid.columnconfigure(0, weight=1)
+        metrics_grid.columnconfigure(1, weight=1)
         self.result_label = ttk.Label(result_card, text="等待处理...", style="Result.TLabel")
         self.result_label.pack(fill="x")
+        self.abnormal_btn = ttk.Button(result_card, text="查看异常订单", style="Primary.TButton",
+                                      command=self._open_output_file, state="disabled")
+        self.abnormal_btn.pack(fill="x", pady=(8, 0))
 
         # 输出结果预览
         output_card = self._make_card(right_col, "输出结果", pady=(0, 0), fill="both", expand=True)
@@ -934,18 +1002,28 @@ class OrderApp:
         tree_frame.pack(fill="both", expand=True)
         self.output_tree = ttk.Treeview(
             tree_frame,
-            columns=("size", "qty", "area"),
+            columns=("section", "size", "order_qty", "stock_qty", "need_qty", "remain_qty", "area"),
             show="headings",
             height=18
         )
         tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=self.output_tree.yview)
         self.output_tree.configure(yscrollcommand=tree_scroll.set)
+        self.output_tree.heading("section", text="分区")
         self.output_tree.heading("size", text="尺寸")
-        self.output_tree.heading("qty", text="需加工数量")
+        self.output_tree.heading("order_qty", text="订单数")
+        self.output_tree.heading("stock_qty", text="库存")
+        self.output_tree.heading("need_qty", text="需加工")
+        self.output_tree.heading("remain_qty", text="剩余")
         self.output_tree.heading("area", text="需加工平方数")
-        self.output_tree.column("size", width=190, anchor="center")
-        self.output_tree.column("qty", width=140, anchor="center")
-        self.output_tree.column("area", width=150, anchor="center")
+        self.output_tree.column("section", width=88, anchor="center")
+        self.output_tree.column("size", width=120, anchor="center")
+        self.output_tree.column("order_qty", width=70, anchor="center")
+        self.output_tree.column("stock_qty", width=70, anchor="center")
+        self.output_tree.column("need_qty", width=78, anchor="center")
+        self.output_tree.column("remain_qty", width=70, anchor="center")
+        self.output_tree.column("area", width=118, anchor="center")
+        self.output_tree.tag_configure("need", background="#fff1f1")
+        self.output_tree.tag_configure("enough", background="#f2fbf5")
         self.output_tree.pack(side="left", fill="both", expand=True)
         tree_scroll.pack(side="right", fill="y")
 
@@ -965,6 +1043,9 @@ class OrderApp:
         self.print_btn = ttk.Button(print_row, text="打印加工清单", style="Primary.TButton",
                                     command=self._print_output, width=14, state="disabled")
         self.print_btn.grid(row=1, column=2, sticky="e", pady=(8, 0))
+        self.open_file_btn = ttk.Button(print_row, text="打开结果文件", style="Primary.TButton",
+                                        command=self._open_output_file, width=12, state="disabled")
+        self.open_file_btn.grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.open_btn = ttk.Button(print_row, text="打开文件夹", style="Info.TButton",
                                    command=self._open_output_folder, width=10, state="disabled")
         self.open_btn.grid(row=1, column=1, sticky="e", pady=(8, 0))
@@ -979,6 +1060,55 @@ class OrderApp:
             self.input_path.set(path)
             if not self.output_dir.get():
                 self.output_dir.set(os.path.dirname(path))
+            self._preview_selected_file()
+
+    def _set_metrics(self, values=None):
+        values = values or {}
+        for key, label in self.metric_value_labels.items():
+            label.config(text=values.get(key, "--"), fg=self.TEXT)
+        abnormal_value = values.get("abnormal_count") if values else None
+        if abnormal_value not in (None, "--", "0", 0):
+            self.metric_value_labels["abnormal_count"].config(fg=self.DANGER)
+
+    def _preview_selected_file(self):
+        path = self.input_path.get()
+        if not path:
+            self.precheck_status.set("选择文件后自动预检订单表")
+            return
+        try:
+            result = process_orders(
+                path,
+                tempfile.gettempdir(),
+                self.config.get("inventory", {}),
+                False
+            )
+            (
+                _output_path, order_count, total_qty, size_count, _total_area,
+                need_qty, need_area, abnormal_count, _production_items, summary_items
+            ) = result
+            self.summary_items = summary_items
+            self.current_order_sizes = [item["size"] for item in summary_items]
+            self._populate_output_tree(summary_items)
+            self._set_metrics({
+                "order_count": f"{order_count:g}",
+                "total_qty": f"{total_qty:g}",
+                "need_qty": f"{need_qty:g}",
+                "need_area": f"{need_area:g}",
+                "abnormal_count": f"{abnormal_count:g}",
+            })
+            status = (
+                f"预检通过：{order_count} 条订单 / {total_qty} 件 / "
+                f"{size_count} 种尺寸 / 需加工 {need_qty} 件"
+            )
+            if abnormal_count:
+                status += f" / 异常 {abnormal_count} 条"
+            self.precheck_status.set(status)
+        except Exception as e:
+            self.summary_items = []
+            self.current_order_sizes = []
+            self._populate_output_tree([])
+            self._set_metrics()
+            self.precheck_status.set(f"预检失败：{e}")
 
     def _refresh_excel_status(self):
         if self.generate_excel.get():
@@ -1002,6 +1132,7 @@ class OrderApp:
 
         current_inventory = normalize_inventory(self.config.get("inventory", {}))
         entries = {}
+        order_size_set = set(self.current_order_sizes)
 
         left = tk.Frame(editor, bg=self.BG)
         left.pack(side="left", fill="both", expand=True, padx=(16, 8), pady=14)
@@ -1036,8 +1167,30 @@ class OrderApp:
                 row += 1
             return row
 
-        next_row = add_section("≤10平方米", SMALL_STOCK_SIZES, 0)
-        add_section(">10平方米", LARGE_STOCK_SIZES, next_row + 1)
+        if order_size_set:
+            next_row = add_section(
+                "本次订单尺寸 ≤10平方米",
+                [size for size in SMALL_STOCK_SIZES if size in order_size_set],
+                0
+            )
+            next_row = add_section(
+                "本次订单尺寸 >10平方米",
+                [size for size in LARGE_STOCK_SIZES if size in order_size_set],
+                next_row + 1
+            )
+            next_row = add_section(
+                "其他常用尺寸 ≤10平方米",
+                [size for size in SMALL_STOCK_SIZES if size not in order_size_set],
+                next_row + 1
+            )
+            add_section(
+                "其他常用尺寸 >10平方米",
+                [size for size in LARGE_STOCK_SIZES if size not in order_size_set],
+                next_row + 1
+            )
+        else:
+            next_row = add_section("≤10平方米", SMALL_STOCK_SIZES, 0)
+            add_section(">10平方米", LARGE_STOCK_SIZES, next_row + 1)
 
         ttk.Label(right, text="库存预览", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 8))
         preview = ttk.Treeview(right, columns=("size", "qty"), show="headings", height=22)
@@ -1067,6 +1220,8 @@ class OrderApp:
             save_config(self.config)
             self._refresh_inventory_status()
             refresh_preview()
+            if self.input_path.get():
+                self._preview_selected_file()
             messagebox.showinfo("完成", "库存数量已保存")
 
         def clear_inventory():
@@ -1103,8 +1258,12 @@ class OrderApp:
 
         self.process_btn.config(state="disabled")
         self.open_btn.config(state="disabled")
+        self.open_file_btn.config(state="disabled")
+        self.abnormal_btn.config(state="disabled")
         self.print_btn.config(state="disabled")
         self.production_items = []
+        self.summary_items = []
+        self._set_metrics()
         self._populate_output_tree([])
         self.result_label.config(text="正在处理中...", foreground="gray")
         self.progress.start(15)
@@ -1128,38 +1287,63 @@ class OrderApp:
     def _on_success(self, result):
         (
             output_path, order_count, total_qty, size_count, total_area,
-            need_qty, need_area, abnormal_count, production_items
+            need_qty, need_area, abnormal_count, production_items, summary_items
         ) = result
         self.production_items = production_items
-        self._populate_output_tree(production_items)
+        self.summary_items = summary_items
+        self._populate_output_tree(summary_items)
+        self._set_metrics({
+            "order_count": f"{order_count:g}",
+            "total_qty": f"{total_qty:g}",
+            "need_qty": f"{need_qty:g}",
+            "need_area": f"{need_area:g}",
+            "abnormal_count": f"{abnormal_count:g}",
+        })
         abnormal_text = f"\n异常尺寸：{abnormal_count} 条（请看异常订单表）" if abnormal_count else ""
         output_text = f"已保存到：{output_path}" if output_path else "本次未生成Excel文件"
         self.progress.stop()
+        if abnormal_count:
+            self.result_label.configure(style="Result.TLabel")
         self.result_label.config(
             text=(
                 f"处理完成！\n"
-                f"共 {order_count} 条订单    |    共 {size_count} 种尺寸\n"
-                f"总数量：{total_qty}    |    总平方数：{total_area} m\u00b2\n"
-                f"需加工数量：{need_qty}    |    需加工平方数：{need_area} m\u00b2\n"
+                f"共 {size_count} 种尺寸    |    总平方数：{total_area} m\u00b2\n"
                 f"{output_text}"
                 f"{abnormal_text}"
             ),
         )
-        self.result_label.configure(foreground=self.SUCCESS)
+        self.result_label.configure(foreground=self.DANGER if abnormal_count else self.SUCCESS)
         self.process_btn.config(state="normal")
         self.open_btn.config(state="normal" if output_path else "disabled")
+        self.open_file_btn.config(state="normal" if output_path else "disabled")
+        self.abnormal_btn.config(state="normal" if output_path and abnormal_count else "disabled")
         self.print_btn.config(state="normal" if production_items else "disabled")
 
     def _on_error(self, msg):
         self.progress.stop()
+        self._set_metrics()
         self.result_label.config(text=f"处理失败：\n{msg}")
         self.result_label.configure(foreground=self.DANGER)
         self.process_btn.config(state="normal")
 
-    def _populate_output_tree(self, production_items):
+    def _populate_output_tree(self, summary_items):
         self.output_tree.delete(*self.output_tree.get_children())
-        for size, qty, area in production_items:
-            self.output_tree.insert("", "end", values=(size, f"{qty:g}", f"{round(area, 2):g}"))
+        for item in summary_items:
+            tag = "need" if item["need_qty"] > 0 else "enough"
+            self.output_tree.insert(
+                "",
+                "end",
+                values=(
+                    item["section"],
+                    item["size"],
+                    f"{item['order_qty']:g}",
+                    f"{item['stock_qty']:g}",
+                    f"{item['need_qty']:g}",
+                    f"{item['remain_qty']:g}",
+                    f"{item['need_area']:g}",
+                ),
+                tags=(tag,)
+            )
 
     def _refresh_printers(self):
         printers = get_printers()
@@ -1177,6 +1361,12 @@ class OrderApp:
     def _open_output_folder(self):
         if self.output_path:
             open_folder(os.path.dirname(self.output_path))
+
+    def _open_output_file(self):
+        if self.output_path:
+            open_path(self.output_path)
+        else:
+            messagebox.showinfo("提示", "本次没有生成Excel文件")
 
 
 def main():

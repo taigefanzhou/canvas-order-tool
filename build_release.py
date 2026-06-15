@@ -5,7 +5,7 @@ Run on the Windows computer:
     python build_release.py
 
 Output:
-    release/丽群帆布纺织电商统计系统_v1.8.zip
+    release/丽群帆布纺织电商统计系统_v1.10.zip
 """
 
 import os

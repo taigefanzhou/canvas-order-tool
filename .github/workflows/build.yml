@@ -19,12 +19,11 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Build EXE
-        run: |
-          pyinstaller --onefile --windowed --name "丽群帆布纺织电商统计系统" --icon=logo.ico --add-data "logo.png;." --add-data "logo.ico;." "帆布订单整理.py"
+      - name: Build release package
+        run: python build_release.py
 
-      - name: Upload EXE
+      - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
           name: 丽群帆布纺织电商统计系统
-          path: dist/丽群帆布纺织电商统计系统.exe
+          path: release/*.zip
