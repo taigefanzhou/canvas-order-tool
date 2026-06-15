@@ -33,6 +33,11 @@ def read_constant(name):
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     app_name = read_constant("APP_NAME")
     app_version = read_constant("APP_VERSION")
     release_name = f"{app_name}_{app_version}"
