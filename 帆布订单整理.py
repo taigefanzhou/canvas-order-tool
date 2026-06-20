@@ -395,7 +395,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
     # 表头
     headers = [
         '序号', '订单号', '规格名称', '规格编码', '数量', '快递单号', '备注', '',
-        '尺寸', '订单数量', '库存数量', '需加工数量', '剩余库存', '需加工平方数'
+        '尺寸', '订单行数', '商品数量', '库存数量', '需加工数量', '剩余库存', '需加工平方数'
     ]
     for col, h in enumerate(headers, 1):
         cell = out_ws.cell(row=1, column=col, value=h)
@@ -444,7 +444,8 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         return row + 1
 
     def write_size_group(ws, row, seq_val, size, group, grouped_data):
-        """写一个尺寸的明细和小计，返回 (new_row, new_seq, group_qty, group_area)"""
+        """写一个尺寸的明细和小计，返回订单行数、商品数量和商品平方数。"""
+        group_order_count = len(group)
         group_qty = sum(o['qty'] for o in group)
         area_per = parse_size_area(size)
         group_area = area_per * group_qty
@@ -477,7 +478,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         c5.alignment = Alignment(horizontal='center')
         row += 1
 
-        return row, seq_val, group_qty, group_area
+        return row, seq_val, group_order_count, group_qty, group_area
 
     # ── 小件区块（≤10平方米）──
     block_small_qty = 0
@@ -488,10 +489,10 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
 
         for size in small_sizes:
             group = grouped[size]
-            current_row, seq, gq, ga = write_size_group(out_ws, current_row, seq, size, group, None)
+            current_row, seq, order_count, gq, ga = write_size_group(out_ws, current_row, seq, size, group, None)
             block_small_qty += gq
             block_small_area += ga
-            summary_data_small.append((size, gq, ga))
+            summary_data_small.append((size, order_count, gq, ga))
 
         current_row = write_block_total(
             out_ws, current_row,
@@ -510,10 +511,10 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
 
         for size in large_sizes:
             group = grouped[size]
-            current_row, seq, gq, ga = write_size_group(out_ws, current_row, seq, size, group, None)
+            current_row, seq, order_count, gq, ga = write_size_group(out_ws, current_row, seq, size, group, None)
             block_large_qty += gq
             block_large_area += ga
-            summary_data_large.append((size, gq, ga))
+            summary_data_large.append((size, order_count, gq, ga))
 
         current_row = write_block_total(
             out_ws, current_row,
@@ -542,7 +543,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         return stock_qty, need_qty, remain_qty, need_area
 
     def write_summary_header(row, title, fill):
-        labels = [title, "订单数量", "库存数量", "需加工数量", "剩余库存", "需加工平方数"]
+        labels = [title, "订单行数", "商品数量", "库存数量", "需加工数量", "剩余库存", "需加工平方数"]
         for col_idx, val in enumerate(labels, 9):
             c = out_ws.cell(row=row, column=col_idx, value=val)
             c.font = Font(bold=True, color="FFFFFF")
@@ -553,31 +554,34 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
 
     def write_summary_rows(row, summary_data, total_label, total_fill, section_label):
         block_qty = 0
+        block_order_count = 0
         block_stock = 0
         block_need = 0
         block_remain = 0
         block_need_area = 0.0
 
-        for size, qty, _area in summary_data:
+        for size, order_count, qty, _area in summary_data:
             stock_qty, need_qty, remain_qty, need_area = stock_plan(size, qty)
             if need_qty > 0:
                 production_items.append((size, need_qty, need_area))
             summary_items.append({
                 "section": section_label,
                 "size": size,
-                "order_qty": qty,
+                "order_count": order_count,
+                "item_qty": qty,
                 "stock_qty": stock_qty,
                 "need_qty": need_qty,
                 "remain_qty": remain_qty,
                 "need_area": round(need_area, 2),
             })
-            values = [size, qty, stock_qty, need_qty, remain_qty, round(need_area, 2)]
+            values = [size, order_count, qty, stock_qty, need_qty, remain_qty, round(need_area, 2)]
             for col_idx, val in enumerate(values, 9):
                 c = out_ws.cell(row=row, column=col_idx, value=val)
                 c.border = thin_border
                 c.alignment = Alignment(horizontal='center')
                 if need_qty > 0:
                     c.fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
+            block_order_count += order_count
             block_qty += qty
             block_stock += stock_qty
             block_need += need_qty
@@ -585,7 +589,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
             block_need_area += need_area
             row += 1
 
-        values = [total_label, block_qty, block_stock, block_need, block_remain, round(block_need_area, 2)]
+        values = [total_label, block_order_count, block_qty, block_stock, block_need, block_remain, round(block_need_area, 2)]
         for col_idx, val in enumerate(values, 9):
             c = out_ws.cell(row=row, column=col_idx, value=val)
             c.font = Font(bold=True, color="FFFFFF")
@@ -595,7 +599,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
 
         return row + 2, block_need, block_need_area
 
-    # 右侧汇总表（I-N列）—— 分两段，含库存和加工计划
+    # 右侧汇总表（I-O列）—— 分两段，含订单行数、商品数量、库存和加工计划
     production_items = []
     summary_row = 2
 
@@ -618,10 +622,11 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
         total_need_area += need_area
 
     # 汇总总计行
+    total_order_count = sum(len(grouped[size]) for size in sorted_sizes)
     total_stock = sum(inventory.get(size, 0) for size in sorted_sizes)
     total_remain = sum(max(inventory.get(size, 0) - sum(o['qty'] for o in grouped[size]), 0) for size in sorted_sizes)
     for col_idx, val in enumerate([
-        "总计", total_qty, total_stock, total_need_qty, total_remain, round(total_need_area, 2)
+        "总计", total_order_count, total_qty, total_stock, total_need_qty, total_remain, round(total_need_area, 2)
     ], 9):
         c = out_ws.cell(row=summary_row, column=col_idx, value=val)
         c.font = Font(bold=True)
@@ -665,7 +670,7 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
     # 库存余量：列出库存表里的全部尺寸，方便查看公司现有库存
     if inventory:
         stock_ws = out_wb.create_sheet("库存余量")
-        stock_headers = ['尺寸', '库存数量', '今日订单数量', '加工后剩余库存']
+        stock_headers = ['尺寸', '库存数量', '今日商品数量', '加工后剩余库存']
         for col, h in enumerate(stock_headers, 1):
             c = stock_ws.cell(row=1, column=col, value=h)
             c.font = header_font
@@ -674,9 +679,9 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
 
         all_stock_sizes = sorted(inventory.keys(), key=size_sort_key)
         for row_idx, size in enumerate(all_stock_sizes, 2):
-            order_qty = sum(o['qty'] for o in grouped.get(size, []))
-            remain_qty = max(inventory.get(size, 0) - order_qty, 0)
-            values = [size, inventory.get(size, 0), order_qty, remain_qty]
+            item_qty = sum(o['qty'] for o in grouped.get(size, []))
+            remain_qty = max(inventory.get(size, 0) - item_qty, 0)
+            values = [size, inventory.get(size, 0), item_qty, remain_qty]
             for col, val in enumerate(values, 1):
                 c = stock_ws.cell(row=row_idx, column=col, value=val)
                 c.border = thin_border
@@ -728,10 +733,11 @@ def process_orders(input_path, output_dir, inventory_data=None, generate_excel=T
     out_ws.column_dimensions['H'].width = 3
     out_ws.column_dimensions['I'].width = 14
     out_ws.column_dimensions['J'].width = 10
-    out_ws.column_dimensions['K'].width = 12
+    out_ws.column_dimensions['K'].width = 10
     out_ws.column_dimensions['L'].width = 12
     out_ws.column_dimensions['M'].width = 12
-    out_ws.column_dimensions['N'].width = 14
+    out_ws.column_dimensions['N'].width = 12
+    out_ws.column_dimensions['O'].width = 14
 
     today = datetime.now().strftime("%Y%m%d")
     base_name = f"帆布订单明细_{today}"
@@ -1002,7 +1008,7 @@ class OrderApp:
         tree_frame.pack(fill="both", expand=True)
         self.output_tree = ttk.Treeview(
             tree_frame,
-            columns=("section", "size", "order_qty", "stock_qty", "need_qty", "remain_qty", "area"),
+            columns=("section", "size", "order_count", "item_qty", "stock_qty", "need_qty", "remain_qty", "area"),
             show="headings",
             height=18
         )
@@ -1010,18 +1016,20 @@ class OrderApp:
         self.output_tree.configure(yscrollcommand=tree_scroll.set)
         self.output_tree.heading("section", text="分区")
         self.output_tree.heading("size", text="尺寸")
-        self.output_tree.heading("order_qty", text="订单数")
+        self.output_tree.heading("order_count", text="订单行")
+        self.output_tree.heading("item_qty", text="商品数")
         self.output_tree.heading("stock_qty", text="库存")
         self.output_tree.heading("need_qty", text="需加工")
         self.output_tree.heading("remain_qty", text="剩余")
         self.output_tree.heading("area", text="需加工平方数")
         self.output_tree.column("section", width=88, anchor="center")
         self.output_tree.column("size", width=120, anchor="center")
-        self.output_tree.column("order_qty", width=70, anchor="center")
-        self.output_tree.column("stock_qty", width=70, anchor="center")
+        self.output_tree.column("order_count", width=64, anchor="center")
+        self.output_tree.column("item_qty", width=64, anchor="center")
+        self.output_tree.column("stock_qty", width=64, anchor="center")
         self.output_tree.column("need_qty", width=78, anchor="center")
-        self.output_tree.column("remain_qty", width=70, anchor="center")
-        self.output_tree.column("area", width=118, anchor="center")
+        self.output_tree.column("remain_qty", width=64, anchor="center")
+        self.output_tree.column("area", width=112, anchor="center")
         self.output_tree.tag_configure("need", background="#fff1f1")
         self.output_tree.tag_configure("enough", background="#f2fbf5")
         self.output_tree.pack(side="left", fill="both", expand=True)
@@ -1336,7 +1344,8 @@ class OrderApp:
                 values=(
                     item["section"],
                     item["size"],
-                    f"{item['order_qty']:g}",
+                    f"{item['order_count']:g}",
+                    f"{item['item_qty']:g}",
                     f"{item['stock_qty']:g}",
                     f"{item['need_qty']:g}",
                     f"{item['remain_qty']:g}",
