@@ -24,8 +24,16 @@ jobs:
       - name: Build release package
         run: python build_release.py
 
+      - name: Read release name
+        shell: pwsh
+        run: |
+          $content = Get-Content -Raw -Encoding UTF8 "帆布订单整理.py"
+          $appName = [regex]::Match($content, '(?m)^APP_NAME\s*=\s*"([^"]+)"').Groups[1].Value
+          $appVersion = [regex]::Match($content, '(?m)^APP_VERSION\s*=\s*"([^"]+)"').Groups[1].Value
+          "RELEASE_NAME=${appName}_${appVersion}" >> $env:GITHUB_ENV
+
       - name: Upload release package
         uses: actions/upload-artifact@v4
         with:
-          name: 丽群帆布纺织电商统计系统
+          name: ${{ env.RELEASE_NAME }}
           path: release/*.zip
