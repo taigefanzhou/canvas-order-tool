@@ -51,7 +51,7 @@ python build_release.py
 打包结果会生成到 `release/` 目录，文件名类似：
 
 ```text
-丽群帆布纺织电商统计系统_v1.10.zip
+丽群帆布纺织电商统计系统_v1.11.zip
 ```
 
 ## 重要文件

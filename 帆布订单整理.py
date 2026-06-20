@@ -22,7 +22,7 @@ from tkinter import ttk, filedialog, messagebox, BooleanVar, StringVar
 from PIL import Image, ImageTk
 
 
-APP_VERSION = "v1.10"
+APP_VERSION = "v1.11"
 APP_NAME = "丽群帆布纺织电商统计系统"
 APP_DISPLAY_NAME = f"{APP_NAME} {APP_VERSION}"
 CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".liqun_canvas_order_tool.json")
@@ -215,7 +215,7 @@ def print_production_items(production_items, printer_name=None):
         subprocess.Popen(cmd)
 
 
-def create_print_workbook(production_items):
+def create_print_workbook(production_items, output_path=None):
     """创建只包含加工清单的打印专用 Excel，并设置打印区域。"""
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -280,7 +280,7 @@ def create_print_workbook(production_items):
     ws.page_margins.bottom = 0.5
     ws.freeze_panes = "A3"
 
-    path = os.path.join(tempfile.gettempdir(), "丽群今日加工清单_打印.xlsx")
+    path = output_path or os.path.join(tempfile.gettempdir(), "丽群今日加工清单_打印.xlsx")
     wb.save(path)
     return path
 
@@ -1051,6 +1051,9 @@ class OrderApp:
         self.print_btn = ttk.Button(print_row, text="打印加工清单", style="Primary.TButton",
                                     command=self._print_output, width=14, state="disabled")
         self.print_btn.grid(row=1, column=2, sticky="e", pady=(8, 0))
+        self.export_plan_btn = ttk.Button(print_row, text="导出加工清单", style="Info.TButton",
+                                          command=self._export_production_items, width=14, state="disabled")
+        self.export_plan_btn.grid(row=2, column=2, sticky="e", pady=(8, 0))
         self.open_file_btn = ttk.Button(print_row, text="打开结果文件", style="Primary.TButton",
                                         command=self._open_output_file, width=12, state="disabled")
         self.open_file_btn.grid(row=1, column=0, sticky="w", pady=(8, 0))
@@ -1269,6 +1272,7 @@ class OrderApp:
         self.open_file_btn.config(state="disabled")
         self.abnormal_btn.config(state="disabled")
         self.print_btn.config(state="disabled")
+        self.export_plan_btn.config(state="disabled")
         self.production_items = []
         self.summary_items = []
         self._set_metrics()
@@ -1326,6 +1330,7 @@ class OrderApp:
         self.open_file_btn.config(state="normal" if output_path else "disabled")
         self.abnormal_btn.config(state="normal" if output_path and abnormal_count else "disabled")
         self.print_btn.config(state="normal" if production_items else "disabled")
+        self.export_plan_btn.config(state="normal" if production_items else "disabled")
 
     def _on_error(self, msg):
         self.progress.stop()
@@ -1366,6 +1371,35 @@ class OrderApp:
             messagebox.showinfo("完成", "加工清单已发送到打印机")
         except Exception as e:
             messagebox.showerror("打印失败", str(e))
+
+    def _export_production_items(self):
+        if not self.production_items:
+            messagebox.showwarning("提示", "当前没有需要导出的加工清单")
+            return
+
+        initial_dir = self.output_dir.get()
+        if not initial_dir and self.output_path:
+            initial_dir = os.path.dirname(self.output_path)
+        if not initial_dir:
+            initial_dir = os.path.expanduser("~")
+
+        default_name = f"丽群今日加工清单_{datetime.now().strftime('%Y%m%d')}.xlsx"
+        path = filedialog.asksaveasfilename(
+            title="导出需加工表格",
+            initialdir=initial_dir,
+            initialfile=default_name,
+            defaultextension=".xlsx",
+            filetypes=[("Excel文件", "*.xlsx")],
+        )
+        if not path:
+            return
+
+        try:
+            create_print_workbook(self.production_items, path)
+            messagebox.showinfo("完成", f"需加工表格已导出：\n{path}")
+            open_path(path)
+        except Exception as e:
+            messagebox.showerror("导出失败", str(e))
 
     def _open_output_folder(self):
         if self.output_path:
